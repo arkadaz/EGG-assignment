@@ -1,5 +1,7 @@
-resource "google_artifact_registry_repository" "images" {
-  repository_id = "egg-rag"
-  location      = var.region
-  format        = "DOCKER"
+removed {
+  from = google_artifact_registry_repository.images
+
+  lifecycle {
+    destroy = false
+  }
 }

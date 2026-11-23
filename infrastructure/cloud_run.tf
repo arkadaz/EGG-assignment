@@ -2,6 +2,7 @@ resource "google_cloud_run_v2_job" "migrate" {
   name                = "egg-rag-migrate"
   location            = var.region
   deletion_protection = false
+  run_execution_token = var.image_tag
 
   template {
     template {
@@ -15,7 +16,7 @@ resource "google_cloud_run_v2_job" "migrate" {
       }
 
       containers {
-        image = "us-docker.pkg.dev/cloudrun/container/job"
+        image = "${var.region}-docker.pkg.dev/${var.project_id}/egg-rag/migrate:${var.image_tag}"
 
         env {
           name = "DATABASE_URL"
@@ -35,10 +36,6 @@ resource "google_cloud_run_v2_job" "migrate" {
     }
   }
 
-  lifecycle {
-    ignore_changes = [template[0].template[0].containers[0].image, client, client_version]
-  }
-
   depends_on = [
     google_secret_manager_secret_version.database_url,
     google_secret_manager_secret_iam_member.jobs_database_url,
@@ -49,6 +46,7 @@ resource "google_cloud_run_v2_job" "ingest" {
   name                = "egg-rag-ingest"
   location            = var.region
   deletion_protection = false
+  run_execution_token = var.image_tag
 
   template {
     template {
@@ -73,7 +71,7 @@ resource "google_cloud_run_v2_job" "ingest" {
       }
 
       containers {
-        image = "us-docker.pkg.dev/cloudrun/container/job"
+        image = "${var.region}-docker.pkg.dev/${var.project_id}/egg-rag/ingest:${var.image_tag}"
 
         resources {
           limits = {
@@ -105,14 +103,11 @@ resource "google_cloud_run_v2_job" "ingest" {
     }
   }
 
-  lifecycle {
-    ignore_changes = [template[0].template[0].containers[0].image, client, client_version]
-  }
-
   depends_on = [
     google_secret_manager_secret_version.database_url,
     google_secret_manager_secret_iam_member.jobs_database_url,
     google_storage_bucket_iam_member.jobs_models,
+    google_cloud_run_v2_job.migrate,
   ]
 }
 
@@ -147,7 +142,7 @@ resource "google_cloud_run_v2_service" "search" {
     }
 
     containers {
-      image = "us-docker.pkg.dev/cloudrun/container/hello"
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/egg-rag/search:${var.image_tag}"
 
       resources {
         limits = {
@@ -199,15 +194,12 @@ resource "google_cloud_run_v2_service" "search" {
     }
   }
 
-  lifecycle {
-    ignore_changes = [template[0].containers[0].image, client, client_version]
-  }
-
   depends_on = [
     google_secret_manager_secret_version.database_url,
     google_secret_manager_secret_iam_member.search_database_url,
     google_secret_manager_secret_iam_member.search_llm_api,
     google_storage_bucket_iam_member.search_models,
+    google_cloud_run_v2_job.ingest,
   ]
 }
 

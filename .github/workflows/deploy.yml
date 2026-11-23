@@ -13,7 +13,24 @@ permissions:
   id-token: write
 
 jobs:
-  infrastructure:
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [migrate, ingest, search]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+      - run: docker build -t "$REGISTRY/${{ matrix.app }}:$GITHUB_SHA" ${{ matrix.app }}
+      - run: docker push "$REGISTRY/${{ matrix.app }}:$GITHUB_SHA"
+
+  terraform:
+    needs: images
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -28,51 +45,4 @@ jobs:
         with:
           terraform_version: 1.11.4
       - run: terraform init
-      - run: terraform apply -auto-approve
-
-  migrate:
-    needs: infrastructure
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
-      - run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
-      - run: docker build -t "$REGISTRY/migrate:$GITHUB_SHA" migrate
-      - run: docker push "$REGISTRY/migrate:$GITHUB_SHA"
-      - run: gcloud run jobs update egg-rag-migrate --image "$REGISTRY/migrate:$GITHUB_SHA" --region "$REGION"
-      - run: gcloud run jobs execute egg-rag-migrate --region "$REGION" --wait
-
-  ingest:
-    needs: migrate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
-      - run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
-      - run: docker build -t "$REGISTRY/ingest:$GITHUB_SHA" ingest
-      - run: docker push "$REGISTRY/ingest:$GITHUB_SHA"
-      - run: gcloud run jobs update egg-rag-ingest --image "$REGISTRY/ingest:$GITHUB_SHA" --region "$REGION"
-      - run: gcloud run jobs execute egg-rag-ingest --region "$REGION" --wait
-
-  search:
-    needs: ingest
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
-      - run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
-      - run: docker build -t "$REGISTRY/search:$GITHUB_SHA" search
-      - run: docker push "$REGISTRY/search:$GITHUB_SHA"
-      - run: gcloud run services update egg-rag-search --image "$REGISTRY/search:$GITHUB_SHA" --region "$REGION"
+      - run: terraform apply -auto-approve -var "image_tag=$GITHUB_SHA"
