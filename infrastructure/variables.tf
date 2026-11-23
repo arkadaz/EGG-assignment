@@ -14,5 +14,6 @@ variable "allowed_email" {
 }
 
 variable "google_client_id" {
-  type = string
+  type    = string
+  default = "675949307789-7sbh81aak54ss6srldqb6d2um0j75t3v.apps.googleusercontent.com"
 }
