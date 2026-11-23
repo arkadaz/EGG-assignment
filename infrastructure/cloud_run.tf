@@ -52,13 +52,23 @@ resource "google_cloud_run_v2_job" "ingest" {
 
   template {
     template {
-      service_account = google_service_account.jobs.email
-      timeout         = "1800s"
+      service_account       = google_service_account.jobs.email
+      timeout               = "1800s"
+      execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
 
       volumes {
         name = "cloudsql"
         cloud_sql_instance {
           instances = [google_sql_database_instance.main.connection_name]
+        }
+      }
+
+      volumes {
+        name = "models"
+        gcs {
+          bucket        = var.models_bucket
+          read_only     = true
+          mount_options = ["implicit-dirs"]
         }
       }
 
@@ -68,7 +78,7 @@ resource "google_cloud_run_v2_job" "ingest" {
         resources {
           limits = {
             cpu    = "2"
-            memory = "2Gi"
+            memory = "4Gi"
           }
         }
 
@@ -86,6 +96,11 @@ resource "google_cloud_run_v2_job" "ingest" {
           name       = "cloudsql"
           mount_path = "/cloudsql"
         }
+
+        volume_mounts {
+          name       = "models"
+          mount_path = "/models"
+        }
       }
     }
   }
@@ -97,6 +112,7 @@ resource "google_cloud_run_v2_job" "ingest" {
   depends_on = [
     google_secret_manager_secret_version.database_url,
     google_secret_manager_secret_iam_member.jobs_database_url,
+    google_storage_bucket_iam_member.jobs_models,
   ]
 }
 
@@ -106,7 +122,8 @@ resource "google_cloud_run_v2_service" "search" {
   deletion_protection = false
 
   template {
-    service_account = google_service_account.search.email
+    service_account       = google_service_account.search.email
+    execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
 
     scaling {
       min_instance_count = 0
@@ -120,13 +137,22 @@ resource "google_cloud_run_v2_service" "search" {
       }
     }
 
+    volumes {
+      name = "models"
+      gcs {
+        bucket        = var.models_bucket
+        read_only     = true
+        mount_options = ["implicit-dirs"]
+      }
+    }
+
     containers {
       image = "us-docker.pkg.dev/cloudrun/container/hello"
 
       resources {
         limits = {
           cpu    = "1"
-          memory = "2Gi"
+          memory = "4Gi"
         }
         startup_cpu_boost = true
       }
@@ -165,6 +191,11 @@ resource "google_cloud_run_v2_service" "search" {
         name       = "cloudsql"
         mount_path = "/cloudsql"
       }
+
+      volume_mounts {
+        name       = "models"
+        mount_path = "/models"
+      }
     }
   }
 
@@ -176,6 +207,7 @@ resource "google_cloud_run_v2_service" "search" {
     google_secret_manager_secret_version.database_url,
     google_secret_manager_secret_iam_member.search_database_url,
     google_secret_manager_secret_iam_member.search_llm_api,
+    google_storage_bucket_iam_member.search_models,
   ]
 }
 

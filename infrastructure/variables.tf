@@ -8,6 +8,11 @@ variable "region" {
   default = "asia-southeast1"
 }
 
+variable "models_bucket" {
+  type    = string
+  default = "egg-interview-models"
+}
+
 variable "allowed_email" {
   type    = string
   default = "gta_35121@hotmail.com"

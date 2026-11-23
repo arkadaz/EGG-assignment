@@ -32,6 +32,18 @@ resource "google_secret_manager_secret_iam_member" "search_database_url" {
   member    = google_service_account.search.member
 }
 
+resource "google_storage_bucket_iam_member" "jobs_models" {
+  bucket = var.models_bucket
+  role   = "roles/storage.objectViewer"
+  member = google_service_account.jobs.member
+}
+
+resource "google_storage_bucket_iam_member" "search_models" {
+  bucket = var.models_bucket
+  role   = "roles/storage.objectViewer"
+  member = google_service_account.search.member
+}
+
 resource "google_secret_manager_secret_iam_member" "search_llm_api" {
   secret_id = data.google_secret_manager_secret.llm_api.id
   role      = "roles/secretmanager.secretAccessor"
