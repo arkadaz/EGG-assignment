@@ -1,0 +1,32 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: rag
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: pg_isready -U rag
+      interval: 2s
+      retries: 30
+
+  ingest:
+    build: ./ingest
+    environment:
+      DATABASE_URL: postgresql://rag:${POSTGRES_PASSWORD}@db:5432/rag
+    depends_on:
+      db:
+        condition: service_healthy
+
+  search:
+    build: ./search
+    environment:
+      DATABASE_URL: postgresql://rag:${POSTGRES_PASSWORD}@db:5432/rag
+      LLM_API: ${LLM_API}
+    ports:
+      - "8000:8080"
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
