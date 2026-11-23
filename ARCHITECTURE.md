@@ -35,7 +35,8 @@ the schema, add a new numbered file. Never edit one that has already run.
 
 `POST /ask`:
 
-1. FastAPI checks the body: a question of 1 to 1000 characters.
+1. The login middleware checks the Google JWT in the cookie (see Security). Then FastAPI checks
+   the body: a question of 1 to 1000 characters.
 2. `FastEmbedEmbedder` turns `task: search result | query: <question>` into 768 numbers with
    EmbeddingGemma. It runs in a worker thread, so the server keeps handling other requests.
 3. `PgVectorSearch` runs one SQL query with three parts:
@@ -188,7 +189,19 @@ that are already in place.
   - GitHub can only sign in as the deployer from this repository's `main` branch.
 - **Containers:** all three run as a non-root user (`app`). The search image is built in two
   stages, so uv and the lock files stay out of the image that runs.
+- **Login:** a middleware guards every route except the login page, including the ADK web UI and
+  `/docs`. A request needs a JWT from Sign in with Google, in an `HttpOnly`, `Secure`,
+  `SameSite=Lax` cookie. On every request the service checks four things:
+  - **Signature:** made by Google, checked against Google's public keys, which are cached for
+    5 minutes
+  - **Audience:** our client ID
+  - **Issuer:** Google
+  - **Account:** the email is `ALLOWED_EMAIL` and verified
+
+  The JWT expires after one hour. There is no server-side session to steal or keep in sync. The
+  app refuses to start without `ALLOWED_EMAIL` and `GOOGLE_CLIENT_ID`, so login cannot be
+  switched off by a missing value. The Google sign-in app stays in Testing mode with one test
+  user, a second lock on top of `ALLOWED_EMAIL`.
 - **Input:** questions are limited to 1000 characters. The LLM is told to answer only from the
   passages it is given.
-- **Before real users:** add authentication (Cloud Run IAM or API Gateway) and rate limits in front
-  of the public endpoint.
+- **Before more users:** add rate limits in front of the service.

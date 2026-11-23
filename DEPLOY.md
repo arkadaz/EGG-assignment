@@ -1,14 +1,14 @@
 # Deploy to GCP, step by step
 
 This guide sets up GCP and GitHub from nothing, so that GitHub Actions can deploy the project with
-one click and remove it with another. Steps 1 to 6 run once per GCP project. After that, you only
-use the two buttons in step 8.
+one click and remove it with another. Steps 1 to 8 run once per GCP project. After that, you only
+use the two buttons in step 9.
 
 There are two kinds of setup:
 
 | What | Made by | Why |
 |---|---|---|
-| APIs, state bucket, deployer account, GitHub sign-in, LLM key | you, once, with `gcloud` (steps 1 to 6) | Terraform needs them before it can run, and the LLM key is something only you have. |
+| APIs, state bucket, deployer account, GitHub sign-in, LLM key, Google sign-in client | you, once: `gcloud` in steps 1 to 6, the Console in step 7 | Terraform needs them before it can run, the LLM key is something only you have, and Google has no API for creating the sign-in client. |
 | Cloud SQL, Cloud Run, images, `database-url` secret, app accounts | Terraform, from `infrastructure/` | These are what Deploy creates and Destroy removes. |
 
 ## What you need
@@ -132,14 +132,58 @@ The deploy expects this key. To deploy without one, skip this step and delete th
 Search then uses the mock LLM and the agent is off. Any text in the secret counts as a key, so do
 not store a placeholder.
 
-## 7. Point the code at your project
+## 7. Create the Google sign-in client
+
+Every page and API call needs a Google login, and only `allowed_email` can sign in. The login
+works in four steps:
+
+1. The **Sign in with Google** button on `/login` gives the page a JWT, signed by Google, that
+   says which account signed in.
+2. The page sends that JWT to `/auth/google`.
+3. The service checks Google's signature, that the JWT is for your client ID, that it has not
+   expired, and that the email is `allowed_email` and verified.
+4. If all of that passes, the JWT becomes a cookie that every later request is checked against.
+
+The button needs a client ID from your project. Google has no API or Terraform for this, so you
+make it in the Console:
+
+1. Open **Google Auth Platform** in the Console
+   (`https://console.cloud.google.com/auth/overview?project=<your project>`) and click
+   **Get started**.
+2. Fill in the app details:
+   - **App information:** the app name `EGG RAG`, and your email as the support email
+   - **Audience:** **External**
+   - **Contact information:** your email
+3. Accept the policy and click **Create**.
+4. Go to **Audience** → **Test users** → **Add users**, add the email that will sign in, and save.
+   While the app is in Testing mode, only test users can sign in at all. That is a second lock on
+   top of `allowed_email`.
+5. Go to **Clients** → **Create client**:
+   - **Application type:** Web application
+   - **Name:** `egg-rag-search`
+   - **Authorized JavaScript origins:** add these three
+     - `https://egg-rag-search-<project number>.<region>.run.app`. Cloud Run gives the service
+       this address, so you know it before the first deploy. Print it with
+       `echo https://egg-rag-search-$PROJECT_NUMBER.$REGION.run.app`.
+     - `http://localhost`
+     - `http://localhost:8000`
+   - **Redirect URIs:** leave them empty. The button hands the JWT straight to the page.
+6. Click **Create**, then copy the **Client ID**. It ends in `.apps.googleusercontent.com`. You do
+   not need the client secret.
+
+Put the client ID in two places:
+
+- **For GCP:** in `infrastructure/variables.tf`, as the default of `google_client_id`
+- **For local runs:** in `.env`, as `GOOGLE_CLIENT_ID`
+
+## 8. Point the code at your project
 
 If you used a different project, region or repository, change these places, then commit and
 push:
 
 | File | What to change |
 |---|---|
-| `infrastructure/variables.tf` | `project_id` and `region` |
+| `infrastructure/variables.tf` | `project_id`, `region`, `allowed_email` and `google_client_id` |
 | `infrastructure/main.tf` | the state bucket name |
 | `.github/workflows/deploy.yml` | `REGION`, `REGISTRY`, `WORKLOAD_IDENTITY_PROVIDER` (it contains the project number) and `SERVICE_ACCOUNT` |
 | `.github/workflows/destroy.yml` | `WORKLOAD_IDENTITY_PROVIDER` and `SERVICE_ACCOUNT` |
@@ -150,7 +194,7 @@ Print the provider name to copy into the workflows:
 echo projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/providers/github
 ```
 
-## 8. Deploy and destroy with a click
+## 9. Deploy and destroy with a click
 
 **Deploy:** on GitHub, open the repository, then **Actions** → **Deploy** → **Run workflow** →
 branch `main` → **Run workflow**. Four jobs run, one after the other:
@@ -162,21 +206,23 @@ branch `main` → **Run workflow**. Four jobs run, one after the other:
 | `ingest` | builds and pushes the ingest image, then runs the job | several minutes (the image holds the 1.2 GB model) |
 | `search` | builds and pushes the search image, then moves the service to it | several minutes |
 
-The last step prints the service URL. You can also get it with:
+Then open `https://egg-rag-search-<project number>.<region>.run.app/`:
 
-```bash
-gcloud run services describe egg-rag-search --region=$REGION --format='value(status.url)'
-```
+1. It sends you to the login page. Sign in with Google.
+2. You land in the ADK web UI. `/docs` is the API.
+3. The first request after an idle period takes a few extra seconds while an instance starts.
 
-Then try it:
+Cloud Run also gives the service an older, random-looking address. Google sign-in refuses it,
+because it is not in the client's JavaScript origins, so always use the one with the project
+number.
+
+To call the API from curl, copy the `google_id_token` cookie from the browser after you sign in:
 
 ```bash
 curl -X POST <url>/ask -H "Content-Type: application/json" \
+  -b "google_id_token=<the cookie value>" \
   -d '{"question": "Who created Kubernetes?"}'
 ```
-
-Open `<url>/` for the ADK web UI. The first request after an idle period takes a few extra
-seconds while an instance starts.
 
 **Destroy:** **Actions** → **Destroy** → **Run workflow**. It removes everything Terraform made:
 
@@ -186,7 +232,7 @@ seconds while an instance starts.
 - the `database-url` secret
 - the app accounts
 
-What stays is the setup from steps 2 to 6, which costs almost nothing. The next Deploy builds
+What stays is the setup from steps 2 to 7, which costs almost nothing. The next Deploy builds
 everything again with a new database name (a random suffix), because Google blocks a deleted
 Cloud SQL name for about a week.
 

@@ -10,7 +10,7 @@ It is three projects that share only the database, plus the Terraform that deplo
 |---|---|---|
 | [`migrate/`](migrate) | `migrate.py` applies the SQL files in `migrations/` in name order. It records each file in a `schema_migrations` table, so a file is applied only once. | A job that runs before ingest and exits. |
 | [`ingest/`](ingest) | `ingest.py` reads `data/wikipedia.jsonl`, splits each article into paragraphs, embeds them and stores the documents and chunks in PostgreSQL. A SHA-256 hash of every document and chunk lets it skip what is already stored. | A job that runs and exits. |
-| [`search/`](search) | `POST /ask`: hybrid search and an LLM answer with sources. `POST /agent/ask`: a Google ADK agent that can search several times before it answers. `/`: the ADK web UI. | A FastAPI service. |
+| [`search/`](search) | `POST /ask`: hybrid search and an LLM answer with sources. `POST /agent/ask`: a Google ADK agent that can search several times before it answers. `/`: the ADK web UI. Every route needs a Google login, and only `ALLOWED_EMAIL` can sign in. | A FastAPI service. |
 | [`infrastructure/`](infrastructure) | Terraform for GCP: Cloud SQL, Cloud Run, Secret Manager, Artifact Registry. Its state is kept in a GCS bucket. | GitHub Actions, when you start Deploy or Destroy. |
 
 The contract between the projects is the schema in
@@ -42,8 +42,16 @@ cp .env.example .env
 docker compose up --build
 ```
 
-In `.env`, set `POSTGRES_PASSWORD` (letters and digits). Optionally set `LLM_API` to an
-OpenRouter key. Without it, `/ask` uses the mock LLM and the agent is off. Git ignores `.env`.
+In `.env`, set:
+
+- `POSTGRES_PASSWORD`: letters and digits
+- `ALLOWED_EMAIL`: the one Google account that may sign in
+- `GOOGLE_CLIENT_ID`: the OAuth client ID. Step 7 of [DEPLOY.md](DEPLOY.md) shows how to create
+  it. Add `http://localhost` and `http://localhost:8000` to its JavaScript origins.
+- `LLM_API` (optional): an OpenRouter key. Without it, `/ask` uses the mock LLM and the agent is
+  off.
+
+Git ignores `.env`. Search does not start without `ALLOWED_EMAIL` and `GOOGLE_CLIENT_ID`.
 
 The first build downloads the 1.2 GB embedding model into the ingest and search images, so it
 takes a few minutes. Then each service starts once the one before it is done:
@@ -59,14 +67,28 @@ ingest-1   | Documents: 10 new, 0 duplicates skipped
 ingest-1   | Chunks: 330 new, 0 duplicates skipped
 ```
 
-- http://localhost:8000/docs is the API.
+Open http://localhost:8000/. It sends you to the login page. Sign in with Google as
+`ALLOWED_EMAIL`, and you get in:
+
 - http://localhost:8000/ is the ADK web UI. It needs `LLM_API`. Pick `knowledge_agent`, ask a
   question and see each tool call (`search_knowledge_base`, `list_documents`) and its result.
+- http://localhost:8000/docs is the API. Use "Try it out" there, because your login comes with
+  it.
+- http://localhost:8000/logout signs you out.
 
 ### Ask a question
 
+Every route except `/login`, `/auth/google` and `/logout` needs the login:
+
+- Without it, an API call gets 401 `Login required`, and a page sends you to `/login`.
+- The login is the `google_id_token` cookie, a JWT signed by Google that lasts one hour.
+
+To call the API from curl, copy that cookie from the browser. It is under the developer tools,
+in Application → Cookies.
+
 ```bash
 curl -X POST localhost:8000/ask -H "Content-Type: application/json" \
+  -b "google_id_token=<the cookie value>" \
   -d '{"question": "Who created Kubernetes?"}'
 ```
 
@@ -136,6 +158,8 @@ they come from Secret Manager.
 |---|---|---|
 | `POSTGRES_PASSWORD` | compose | required |
 | `DATABASE_URL` | all three | required (compose builds it from `POSTGRES_PASSWORD`) |
+| `ALLOWED_EMAIL` | search | required, the only Google account that can sign in |
+| `GOOGLE_CLIENT_ID` | search | required, the OAuth client ID that Google signs the login JWT for |
 | `DB_POOL_SIZE` / `DB_POOL_TIMEOUT` | search | `5` / `10` seconds |
 | `TOP_K` | search | `4` passages per answer |
 | `MIN_SCORE` | search | `0.4`, passages below this cosine similarity are dropped |
@@ -176,14 +200,24 @@ terraform init -backend=false
 terraform validate
 ```
 
-The tests in [`search/tests/test_api.py`](search/tests/test_api.py) replace the database, the
-model and the LLM with fakes, so they need nothing else running. They check that:
+The tests replace the database, the model and the LLM with fakes, so they need nothing else
+running. They sign in with JWTs signed by a test key made fresh for each run, instead of
+Google's.
+
+[`test_api.py`](search/tests/test_api.py) checks that:
 
 - `/ask` and `/api/v1/ask` return only passages above `MIN_SCORE`
 - a question with no match gets the "not found" answer
 - the agent lists each passage once
 - `/agent/ask` returns 503 without a key
 - the prompt numbers the passages
+
+[`test_login.py`](search/tests/test_login.py) checks that:
+
+- an API call without the login gets 401, and a page goes to `/login`
+- the owner can sign in and out
+- every other token is refused: another account, an unverified email, another client ID,
+  another issuer, an expired token, a forged signature, or junk
 
 There are three workflows in [`.github/workflows/`](.github/workflows):
 
@@ -207,6 +241,7 @@ search/app/
   application/prompts.py           the shared prompts and PROMPT_VERSION
   application/ports/               EmbedderPort, VectorSearchPort, LLMPort, AgentPort
   adapters/inbound/api/            POST /ask and /agent/ask (also under /api/v1), use cases via Depends
+  adapters/inbound/login/          Google sign-in page, JWT check, middleware that guards every route
   adapters/inbound/adk_ui/         hands our agent to the ADK web UI
   adapters/outbound/db/            connection pool and PgVectorSearch (hybrid search with RRF)
   adapters/outbound/embeddings/    FastEmbedEmbedder (EmbeddingGemma)
