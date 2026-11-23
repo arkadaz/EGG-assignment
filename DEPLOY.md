@@ -1,6 +1,27 @@
-# Deploy to GCP, step by step
+# Deploy, step by step
 
-This guide sets up GCP and GitHub from nothing, so that GitHub Actions can deploy the project with
+There are two places to run the project:
+
+| Where | How |
+|---|---|
+| Your computer | Docker Compose, with one command |
+| GCP | Terraform, run by GitHub Actions when you click Deploy |
+
+## Locally: one command
+
+```bash
+docker compose up --build
+```
+
+Then open http://localhost:8000. Compose builds the three images and starts db, migrate, ingest
+and search in that order. Locally there is no Terraform and no GitHub Actions.
+
+Before the first run, you need `.env` and the model in `models/`. The
+[README](README.md#run-locally) shows both.
+
+## On GCP
+
+This part sets up GCP and GitHub from nothing, so that GitHub Actions can deploy the project with
 one click and remove it with another. Steps 1 to 8 run once per GCP project. After that, you only
 use the two buttons in step 9.
 
@@ -11,7 +32,7 @@ There are two kinds of setup:
 | APIs, state bucket, model bucket with the model, image registry, deployer account, GitHub sign-in, LLM key, Google sign-in client | you, once: `gcloud` in steps 1 to 6, the Console in step 7 | Terraform needs some of them before it can run. Deploy pushes the images to the registry before Terraform starts. The model and the LLM key are data that only you upload. Google has no API for creating the sign-in client. Destroy keeps all of them. |
 | Cloud SQL, Cloud Run, `database-url` secret, app accounts, and each deploy of new images | Terraform, from `infrastructure/`, run by GitHub Actions | These are what Deploy creates and Destroy removes. |
 
-## What you need
+### What you need
 
 - A GCP project with billing turned on
 - The `gcloud` CLI, signed in as an owner of that project (`gcloud auth login`)
@@ -21,7 +42,7 @@ There are two kinds of setup:
 You do not need Terraform on your computer; GitHub Actions runs it. The commands below are for
 bash (Git Bash on Windows).
 
-## 1. Set the names once
+### 1. Set the names once
 
 ```bash
 PROJECT=egg-interview
@@ -35,7 +56,7 @@ gcloud config set project $PROJECT
 Use your own project ID and `owner/repository`. The project number is a second ID that Google
 gives every project; the GitHub sign-in in step 5 needs it.
 
-## 2. Turn on the APIs
+### 2. Turn on the APIs
 
 ```bash
 gcloud services enable run.googleapis.com sqladmin.googleapis.com \
@@ -47,7 +68,7 @@ gcloud services enable run.googleapis.com sqladmin.googleapis.com \
 Every GCP product is off until you turn it on for the project. `sts` and `iamcredentials` are the
 ones that let GitHub sign in without a key.
 
-## 3. Create the buckets and the image registry
+### 3. Create the buckets and the image registry
 
 ```bash
 gcloud storage buckets create gs://$PROJECT-tfstate --location=$REGION \
@@ -97,7 +118,7 @@ gcloud artifacts repositories create egg-rag --repository-format=docker --locati
 Deploy builds the images and pushes them here first, then runs Terraform with their tag. The
 registry has to exist before that first push, so it is one-time setup and Destroy keeps it.
 
-## 4. Create the deployer account
+### 4. Create the deployer account
 
 ```bash
 gcloud iam service-accounts create egg-rag-deployer --display-name="GitHub Actions deployer"
@@ -123,7 +144,7 @@ permissions, so it needs one role for each of those. The last two commands are f
 - **State bucket:** the deployer can read and write the state file.
 - **Models bucket:** the deployer can give the app accounts read access to the model.
 
-## 5. Let GitHub sign in as the deployer
+### 5. Let GitHub sign in as the deployer
 
 ```bash
 gcloud iam workload-identity-pools create github --location=global
@@ -152,7 +173,7 @@ repository needs no secrets in its GitHub settings.
 Do not delete this pool to start over. Google keeps a deleted pool for 30 days, and its name
 cannot be used again during that time.
 
-## 6. Store the LLM key
+### 6. Store the LLM key
 
 ```bash
 gcloud secrets create llm-api --replication-policy=automatic
@@ -172,7 +193,7 @@ The deploy expects this key. To deploy without one, skip this step and delete th
 Search then uses the mock LLM and the agent is off. Any text in the secret counts as a key, so do
 not store a placeholder.
 
-## 7. Create the Google sign-in client
+### 7. Create the Google sign-in client
 
 Every page and API call needs a Google login, and only `allowed_email` can sign in. The login
 works in four steps:
@@ -216,7 +237,7 @@ Put the client ID in two places:
 - **For GCP:** in `infrastructure/variables.tf`, as the default of `google_client_id`
 - **For local runs:** in `.env`, as `GOOGLE_CLIENT_ID`
 
-## 8. Point the code at your project
+### 8. Point the code at your project
 
 If you used a different project, region or repository, change these places, then commit and
 push:
@@ -234,7 +255,7 @@ Print the provider name to copy into the workflows:
 echo projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/providers/github
 ```
 
-## 9. Deploy and destroy with a click
+### 9. Deploy and destroy with a click
 
 **Deploy:** on GitHub, open the repository, then **Actions** → **Deploy** → **Run workflow** →
 branch `main` → **Run workflow**. Two jobs run, one after the other:
@@ -285,7 +306,7 @@ almost nothing. The next Deploy builds
 everything again with a new database name (a random suffix), because Google blocks a deleted
 Cloud SQL name for about a week.
 
-## When something fails
+### When something fails
 
 - **Look at the failed step on GitHub first.** It prints the `gcloud` or Terraform error.
 - **A `Permission denied` error names the missing permission.** Grant the deployer the matching
