@@ -151,6 +151,16 @@ resource "google_cloud_run_v2_service" "search" {
         }
       }
 
+      env {
+        name  = "ALLOWED_EMAIL"
+        value = var.allowed_email
+      }
+
+      env {
+        name  = "GOOGLE_CLIENT_ID"
+        value = var.google_client_id
+      }
+
       volume_mounts {
         name       = "cloudsql"
         mount_path = "/cloudsql"
