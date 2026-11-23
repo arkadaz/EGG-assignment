@@ -11,7 +11,7 @@ It is three projects that share only the database, plus the Terraform that deplo
 | [`migrate/`](migrate) | `migrate.py` applies the SQL files in `migrations/` in name order. It records each file in a `schema_migrations` table, so a file is applied only once. | A job that runs before ingest and exits. |
 | [`ingest/`](ingest) | `ingest.py` reads `data/wikipedia.jsonl`, splits each article into paragraphs, embeds them and stores the documents and chunks in PostgreSQL. A SHA-256 hash of every document and chunk lets it skip what is already stored. | A job that runs and exits. |
 | [`search/`](search) | `POST /ask`: hybrid search and an LLM answer with sources. `POST /agent/ask`: a Google ADK agent that can search several times before it answers. `/`: the ADK web UI. Every route needs a Google login, and only `ALLOWED_EMAIL` can sign in. | A FastAPI service. |
-| [`infrastructure/`](infrastructure) | Terraform for GCP: Cloud SQL, Cloud Run, Secret Manager, Artifact Registry. Its state is kept in a GCS bucket. | GitHub Actions, when you start Deploy or Destroy. |
+| [`infrastructure/`](infrastructure) | Terraform for GCP: Cloud SQL, Cloud Run, Secret Manager. It also deploys the images and runs the migrate and ingest jobs. Its state is kept in a GCS bucket. | GitHub Actions only, when you start Deploy or Destroy. Locally, Docker Compose runs everything instead. |
 
 The contract between the projects is the schema in
 [`migrate/migrations/`](migrate/migrations) and the embedding model
@@ -247,7 +247,7 @@ There are three workflows in [`.github/workflows/`](.github/workflows):
 | Workflow | Starts | What it does |
 |---|---|---|
 | `ci.yml` | on every push and pull request | the commands above, plus a Docker build of all three images |
-| `deploy.yml` | only when you click Run workflow | Terraform apply, then the migrate job, then the ingest job, then the new search image |
+| `deploy.yml` | only when you click Run workflow | builds and pushes the three images, then `terraform apply`, which runs the migrate job, then the ingest job, then moves search to the new image |
 | `destroy.yml` | only when you click Run workflow | Terraform destroy, which removes everything it created |
 
 ## Structure
@@ -286,8 +286,7 @@ infrastructure/                    Terraform, one file per area
   database.tf                      Cloud SQL instance, database and user
   secrets.tf                       DATABASE_URL secret, the existing llm-api secret
   service_accounts.tf              one account for the jobs, one for search, and their access
-  cloud_run.tf                     migrate job, ingest job, search service
-  registry.tf                      Artifact Registry for the images
+  cloud_run.tf                     migrate job, ingest job, search service, all on the image_tag images
 ```
 
 To change the schema, add a new file such as `migrate/migrations/002_add_column.sql`. Never edit

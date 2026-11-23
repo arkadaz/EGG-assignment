@@ -8,8 +8,8 @@ There are two kinds of setup:
 
 | What | Made by | Why |
 |---|---|---|
-| APIs, state bucket, model bucket with the model, deployer account, GitHub sign-in, LLM key, Google sign-in client | you, once: `gcloud` in steps 1 to 6, the Console in step 7 | Terraform needs some of them before it can run. The model and the LLM key are data that only you upload. Google has no API for creating the sign-in client. Destroy keeps all of them. |
-| Cloud SQL, Cloud Run, images, `database-url` secret, app accounts | Terraform, from `infrastructure/` | These are what Deploy creates and Destroy removes. |
+| APIs, state bucket, model bucket with the model, image registry, deployer account, GitHub sign-in, LLM key, Google sign-in client | you, once: `gcloud` in steps 1 to 6, the Console in step 7 | Terraform needs some of them before it can run. Deploy pushes the images to the registry before Terraform starts. The model and the LLM key are data that only you upload. Google has no API for creating the sign-in client. Destroy keeps all of them. |
+| Cloud SQL, Cloud Run, `database-url` secret, app accounts, and each deploy of new images | Terraform, from `infrastructure/`, run by GitHub Actions | These are what Deploy creates and Destroy removes. |
 
 ## What you need
 
@@ -47,7 +47,7 @@ gcloud services enable run.googleapis.com sqladmin.googleapis.com \
 Every GCP product is off until you turn it on for the project. `sts` and `iamcredentials` are the
 ones that let GitHub sign in without a key.
 
-## 3. Create the bucket for the Terraform state
+## 3. Create the buckets and the image registry
 
 ```bash
 gcloud storage buckets create gs://$PROJECT-tfstate --location=$REGION \
@@ -88,12 +88,21 @@ The model is 1.2 GB. Here is why it lives in a bucket rather than in the images:
 
 If you use a different bucket name, put it in `infrastructure/variables.tf` as `models_bucket`.
 
+Last, create the registry for the Docker images:
+
+```bash
+gcloud artifacts repositories create egg-rag --repository-format=docker --location=$REGION
+```
+
+Deploy builds the images and pushes them here first, then runs Terraform with their tag. The
+registry has to exist before that first push, so it is one-time setup and Destroy keeps it.
+
 ## 4. Create the deployer account
 
 ```bash
 gcloud iam service-accounts create egg-rag-deployer --display-name="GitHub Actions deployer"
 
-for ROLE in roles/run.admin roles/cloudsql.admin roles/artifactregistry.admin \
+for ROLE in roles/run.admin roles/cloudsql.admin roles/artifactregistry.writer \
   roles/secretmanager.admin roles/iam.serviceAccountAdmin roles/iam.serviceAccountUser \
   roles/resourcemanager.projectIamAdmin; do
   gcloud projects add-iam-policy-binding $PROJECT --member=serviceAccount:$DEPLOYER \
@@ -107,9 +116,9 @@ gcloud storage buckets add-iam-policy-binding gs://$PROJECT-models \
   --member=serviceAccount:$DEPLOYER --role=roles/storage.admin
 ```
 
-GitHub Actions runs as this account. Terraform creates Cloud SQL, Cloud Run, images, secrets,
-accounts and their permissions, so it needs one role for each of those. The last two commands are
-for the buckets:
+GitHub Actions runs as this account. It pushes the images, which needs
+`artifactregistry.writer`. Then Terraform creates Cloud SQL, Cloud Run, secrets, accounts and their
+permissions, so it needs one role for each of those. The last two commands are for the buckets:
 
 - **State bucket:** the deployer can read and write the state file.
 - **Models bucket:** the deployer can give the app accounts read access to the model.
@@ -228,14 +237,23 @@ echo projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/prov
 ## 9. Deploy and destroy with a click
 
 **Deploy:** on GitHub, open the repository, then **Actions** → **Deploy** → **Run workflow** →
-branch `main` → **Run workflow**. Four jobs run, one after the other:
+branch `main` → **Run workflow**. Two jobs run, one after the other:
 
 | Job | What it does | Time |
 |---|---|---|
-| `infrastructure` | `terraform apply`. The first run creates Cloud SQL, which is the slow part. | about 10 to 15 minutes the first time, under a minute after that |
-| `migrate` | builds and pushes the migrate image, then runs the job | 1 to 2 minutes |
-| `ingest` | builds and pushes the ingest image, then runs the job | about 3 to 5 minutes |
-| `search` | builds and pushes the search image, then moves the service to it | about 2 to 3 minutes |
+| `images` | builds the migrate, ingest and search images at the same time and pushes them, tagged with the commit | about 3 minutes |
+| `terraform` | `terraform apply -var image_tag=<commit>`, which deploys those images | about 5 minutes, plus 10 to 15 the first time, while it creates Cloud SQL |
+
+`terraform apply` does everything in this order, and each step waits for the one before it:
+
+1. Creates or updates the infrastructure.
+2. Points the migrate job at the new image and runs it. Terraform waits until the run has
+   finished.
+3. Does the same for the ingest job.
+4. Points the search service at the new image. Cloud Run moves the traffic once the new revision
+   has started.
+
+Terraform runs each job once per commit. Running Deploy again on the same commit changes nothing.
 
 Then open `https://egg-rag-search-<project number>.<region>.run.app/`:
 
@@ -259,11 +277,11 @@ curl -X POST <url>/ask -H "Content-Type: application/json" \
 
 - Cloud SQL and its data
 - Cloud Run
-- the images
 - the `database-url` secret
 - the app accounts
 
-What stays is the setup from steps 2 to 7, which costs almost nothing. The next Deploy builds
+What stays is the setup from steps 2 to 7, including the registry with the images, which costs
+almost nothing. The next Deploy builds
 everything again with a new database name (a random suffix), because Google blocks a deleted
 Cloud SQL name for about a week.
 
@@ -272,15 +290,11 @@ Cloud SQL name for about a week.
 - **Look at the failed step on GitHub first.** It prints the `gcloud` or Terraform error.
 - **A `Permission denied` error names the missing permission.** Grant the deployer the matching
   role from step 4.
-- **A failed job shows its logs:** Cloud Run → Jobs → the job → the failed execution → Logs.
+- **If the migrate or ingest run fails,** `terraform apply` stops with an error, and search keeps
+  its old image. Its logs are in Cloud Run → Jobs → the job → the failed execution → Logs.
   - migrate prints one line per migration file.
   - ingest prints how many documents and chunks were new or skipped.
+
+  Fix the cause and push. The new commit gets a new tag, so the next Deploy runs both jobs again.
 - **If the search service does not start,** look at its logs. The usual causes are a missing
   `llm-api` secret version, or a database without tables because migrate did not run.
-- **To see what Terraform would change without changing anything,** run this in
-  `infrastructure/` with owner access:
-
-  ```bash
-  GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token) terraform init
-  GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token) terraform plan
-  ```

@@ -117,19 +117,22 @@ flowchart LR
 | Cloud SQL for PostgreSQL 16 | Stores the documents and chunks, with the pgvector HNSW index and the full-text GIN index. Smallest tier (`db-f1-micro`), with daily backups. |
 | Cloud SQL connector | Cloud Run's built-in connection to Cloud SQL. It is encrypted and checks the caller's IAM role (`cloudsql.client`). The database has a public IP but allows no networks, so this connector is the only way in. |
 | Secret Manager | `database-url` is created by Terraform with a random password. `llm-api` is created once by hand. Both are passed to the containers as environment variables. |
-| Artifact Registry | Stores the three images, each tagged with the Git commit it was built from. Without the model they are small: search 1 GB, ingest 0.5 GB, migrate 0.3 GB. |
-| Terraform | Creates everything above from `infrastructure/`, except the model bucket and the `llm-api` secret. Those two hold data you upload once, so they are one-time setup and Destroy keeps them. Its state lives in a versioned GCS bucket, so every run starts from the same state, and a lock stops two runs at once. |
+| Artifact Registry | Stores the three images, each tagged with the Git commit it was built from. Without the model they are small: search 1 GB, ingest 0.5 GB, migrate 0.3 GB. Deploy pushes the images before Terraform runs, so the registry is one-time setup and Destroy keeps it. |
+| Terraform | Creates everything above from `infrastructure/`, except the registry, the model bucket and the `llm-api` secret. Those three are one-time setup and Destroy keeps them. Terraform also does the deploy: it points the jobs and the service at the new images and runs the jobs. It only runs in GitHub Actions. Its state lives in a versioned GCS bucket, so every run starts from the same state, and a lock stops two runs at once. |
 | GitHub Actions | `ci.yml` checks every push. `deploy.yml` and `destroy.yml` only run when you click them. They sign in to GCP with Workload Identity Federation, so no key is stored in GitHub. |
 | LLM provider (OpenRouter) | Writes the answer from the passages. It is called through LiteLLM, so changing the provider or model only changes `LLM_MODEL`. |
 
 What happens when you click Deploy:
 
-1. `terraform apply` creates or updates the infrastructure. It sets the images only the first
-   time, as placeholders, and never changes them after that, because the next steps own them.
-2. Build and push the migrate image, point the migrate job at it, then run it and wait.
-3. Do the same for ingest.
-4. Build and push the search image and point the service at it. Cloud Run starts the new revision
-   and moves traffic to it once it is ready.
+1. The `images` job builds the three images at the same time and pushes them, tagged with the
+   commit.
+2. The `terraform` job runs `terraform apply -var image_tag=<commit>`. It creates or updates the
+   infrastructure.
+3. It points the migrate job at the new image and runs it. `run_execution_token = var.image_tag`
+   starts one run per commit and makes Terraform wait until that run has finished.
+4. It does the same for ingest. `depends_on` makes ingest wait for migrate.
+5. It points the search service at the new image. `depends_on` makes this wait for ingest.
+   Cloud Run starts the new revision and moves traffic to it once it is ready.
 
 If any step fails, the steps after it do not run. Search only ever runs against a schema and data
 that are already in place.
