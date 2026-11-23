@@ -5,6 +5,7 @@ from google.adk.cli.fast_api import get_fast_api_app
 
 from app.adapters.inbound.adk_ui.agent_loader import SingleAgentLoader
 from app.adapters.inbound.api.routes import router
+from app.adapters.inbound.login.google_login import GoogleLogin, login_router, require_login
 from app.adapters.outbound.agent.adk_agent import AdkAgent
 from app.adapters.outbound.db.pgvector_search import PgVectorSearch
 from app.adapters.outbound.db.pool import open_pool
@@ -17,6 +18,7 @@ from app.application.ports.llm import LLMPort
 from app.application.search_docs import SearchDocs
 from app.settings import Settings
 
+settings = Settings()
 agent_loader = SingleAgentLoader()
 
 
@@ -44,7 +46,6 @@ def create_agent(settings: Settings) -> AdkAgent | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = Settings()
     pool = await open_pool(
         settings.database_url.get_secret_value(), settings.db_pool_size, settings.db_pool_timeout
     )
@@ -69,5 +70,8 @@ app = get_fast_api_app(
     use_local_storage=False,
     lifespan=lifespan,
 )
+app.state.google_login = GoogleLogin(settings.google_client_id, settings.allowed_email)
+app.include_router(login_router)
+app.middleware("http")(require_login)
 app.include_router(router)
 app.include_router(router, prefix="/api/v1")

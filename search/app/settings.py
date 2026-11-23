@@ -1,4 +1,4 @@
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: SecretStr
+    allowed_email: str = Field(min_length=1)
+    google_client_id: str = Field(min_length=1)
     db_pool_size: int = 5
     db_pool_timeout: float = 10.0
     top_k: int = 4

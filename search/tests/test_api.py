@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.adapters.inbound.login.google_login import COOKIE_NAME
 from app.adapters.outbound.llm.mock_llm import MockLLM
 from app.application.ask_agent import AskAgent
 from app.application.ask_question import NO_ANSWER, AskQuestion
@@ -11,6 +12,9 @@ from app.application.prompts import PROMPT_VERSION, answer_user_message
 from app.application.search_docs import SearchDocs
 from app.domain.models import Passage
 from app.main import app
+from tests.fake_google import FakeGoogleKeys, google_token
+
+app.state.google_login.keys = FakeGoogleKeys()
 
 POSTGRES = Passage(
     "PostgreSQL", "https://example.org/pg", "PostgreSQL is a relational database.", 0.8
@@ -47,9 +51,13 @@ def search_docs_over(passages):
     return SearchDocs(FakeEmbedder(), InMemorySearch(passages), top_k=4, min_score=0.4)
 
 
+def signed_in():
+    return TestClient(app, cookies={COOKIE_NAME: google_token()})
+
+
 def ask(passages, question, path="/ask"):
     app.state.ask_question = AskQuestion(search_docs_over(passages), MockLLM())
-    return TestClient(app).post(path, json={"question": question}).json()
+    return signed_in().post(path, json={"question": question}).json()
 
 
 @pytest.mark.parametrize("path", ["/ask", "/api/v1/ask"])
@@ -74,7 +82,7 @@ def test_agent_lists_each_found_passage_once():
         FakeAgent(), search_docs_over(passages), InMemorySearch(passages)
     )
 
-    body = TestClient(app).post("/agent/ask", json={"question": "What is PostgreSQL?"}).json()
+    body = signed_in().post("/agent/ask", json={"question": "What is PostgreSQL?"}).json()
 
     assert body["answer"] == "Found in Kubernetes"
     assert [source["title"] for source in body["sources"]] == ["PostgreSQL"]
@@ -83,7 +91,7 @@ def test_agent_lists_each_found_passage_once():
 def test_agent_needs_an_llm_key():
     app.state.ask_agent = None
 
-    response = TestClient(app).post("/agent/ask", json={"question": "What is PostgreSQL?"})
+    response = signed_in().post("/agent/ask", json={"question": "What is PostgreSQL?"})
 
     assert response.status_code == 503
 
