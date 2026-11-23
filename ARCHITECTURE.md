@@ -4,19 +4,32 @@
 
 ```mermaid
 flowchart LR
+  migrations[migrations/*.sql] --> migrate[migrate job]
+  migrate -->|tables and indexes| db[("PostgreSQL<br/>pgvector + full-text")]
   data[data/wikipedia.jsonl] --> ingest[ingest job]
-  ingest -->|documents and chunks| db[("PostgreSQL<br/>pgvector + full-text")]
+  ingest -->|documents and chunks| db
   client([Client]) -->|POST /ask, /agent/ask| search[search API]
   search -->|hybrid search| db
   search -->|passages| llm[LLM or mock]
 ```
 
-Two services that share only the database:
+Three programs that share only the database:
 
+- **migrate** owns the schema. It applies new migration files, then exits.
 - **ingest** writes. It turns the articles into embedded chunks, then exits.
 - **search** reads. It answers questions from those chunks.
 
-Locally, Docker Compose starts them in order: `db` (healthy) → `ingest` (finished) → `search`.
+They always start in the same order: database → migrate → ingest → search. Docker Compose does
+this locally, and the Deploy workflow does it on GCP.
+
+## How the schema is created
+
+`migrate.py` keeps a `schema_migrations` table with the name of every file it has applied. On
+each run it applies the files in `migrations/` that are not in that table yet, in name order
+(`001_...`, `002_...`), and adds each name to the table.
+
+All of this happens in one transaction: if one file fails, none of them are applied. To change
+the schema, add a new numbered file. Never edit one that has already run.
 
 ## How a question is answered
 
@@ -76,43 +89,57 @@ new and how many were skipped.
 
 ```mermaid
 flowchart LR
-  user([Client]) -->|HTTPS| api["Cloud Run service<br/>search"]
-  subgraph vpc[VPC]
-    api -->|private IP| sql[("Cloud SQL<br/>PostgreSQL 16 + pgvector")]
-    job["Cloud Run job<br/>ingest"] -->|private IP| sql
-  end
+  user([Client]) -->|HTTPS| api["Cloud Run service<br/>egg-rag-search"]
+  migrate["Cloud Run job<br/>egg-rag-migrate"] -->|Cloud SQL connector| sql[("Cloud SQL<br/>PostgreSQL 16 + pgvector")]
+  ingest["Cloud Run job<br/>egg-rag-ingest"] -->|Cloud SQL connector| sql
+  api -->|Cloud SQL connector| sql
   api -->|HTTPS through LiteLLM| llm["LLM provider<br/>OpenRouter"]
   secrets[Secret Manager] -.->|DATABASE_URL, LLM_API| api
-  secrets -.->|DATABASE_URL| job
-  gh[GitHub Actions] -->|push images| registry[Artifact Registry]
-  registry -->|deploy| api
-  registry -->|deploy| job
-  api -.-> ops[Cloud Logging and Monitoring]
-  job -.-> ops
+  secrets -.->|DATABASE_URL| migrate
+  secrets -.->|DATABASE_URL| ingest
+  gh[GitHub Actions] -->|terraform apply| tf[Terraform]
+  tf -->|state| gcs[(GCS bucket)]
+  gh -->|push images| registry[Artifact Registry]
+  registry --> api
+  registry --> migrate
+  registry --> ingest
 ```
 
 | Service | Role |
 |---|---|
-| Cloud Run service (`search/`) | Runs the stateless API over HTTPS with autoscaling. It needs 2 GiB of memory: we measured 1.4 GiB with the model loaded. |
-| Cloud Run job (`ingest/`) | Runs `ingest.py` apart from user traffic and exits. It is safe to run again at any time, because the hashes skip what is stored. It also loads the model, so give it 2 GiB too. |
-| Cloud SQL for PostgreSQL 16 | Stores the documents and chunks, with the pgvector HNSW index and the full-text GIN index. It has automated backups. `db/init.sql` is applied once, for example with `psql` through the Cloud SQL Auth Proxy. |
-| VPC | Cloud Run reaches Cloud SQL over private IP (Direct VPC egress). The database has no public IP. |
-| Secret Manager | Holds `DATABASE_URL` and `LLM_API` and passes them to the containers as environment variables. |
-| Artifact Registry | Stores the two images that CI builds. |
-| GitHub Actions | Tests, builds and pushes the images, then deploys. It signs in to GCP with Workload Identity Federation, so no service account key is stored in GitHub. |
+| Cloud Run service `egg-rag-search` | Runs the stateless API over HTTPS. It scales from 0 to 3 instances, with 1 vCPU and 2 GiB each: we measured 1.4 GiB with the model loaded. |
+| Cloud Run job `egg-rag-migrate` | Applies new migration files, then exits. |
+| Cloud Run job `egg-rag-ingest` | Loads the data apart from user traffic, then exits. It is safe to run again at any time, because the hashes skip what is stored. It gets 2 vCPU and 2 GiB, because it embeds every new paragraph. |
+| Cloud SQL for PostgreSQL 16 | Stores the documents and chunks, with the pgvector HNSW index and the full-text GIN index. Smallest tier (`db-f1-micro`), with daily backups. |
+| Cloud SQL connector | Cloud Run's built-in connection to Cloud SQL. It is encrypted and checks the caller's IAM role (`cloudsql.client`). The database has a public IP but allows no networks, so this connector is the only way in. |
+| Secret Manager | `database-url` is created by Terraform with a random password. `llm-api` is created once by hand. Both are passed to the containers as environment variables. |
+| Artifact Registry | Stores the three images. Each one is tagged with the Git commit it was built from. |
+| Terraform | Creates everything above from `infrastructure/`. Its state lives in a versioned GCS bucket, so every run starts from the same state, and a lock stops two runs at once. |
+| GitHub Actions | `ci.yml` checks every push. `deploy.yml` and `destroy.yml` only run when you click them. They sign in to GCP with Workload Identity Federation, so no key is stored in GitHub. |
 | LLM provider (OpenRouter) | Writes the answer from the passages. It is called through LiteLLM, so changing the provider or model only changes `LLM_MODEL`. |
-| Cloud Logging and Monitoring | Logs, latency and error rate, with alerts. |
+
+What happens when you click Deploy:
+
+1. `terraform apply` creates or updates the infrastructure. It sets the images only the first
+   time, as placeholders, and never changes them after that, because the next steps own them.
+2. Build and push the migrate image, point the migrate job at it, then run it and wait.
+3. Do the same for ingest.
+4. Build and push the search image and point the service at it. Cloud Run starts the new revision
+   and moves traffic to it once it is ready.
+
+If any step fails, the steps after it do not run. Search only ever runs against a schema and data
+that are already in place.
 
 ## Production readiness
 
 **Availability**
 
 - Cloud Run spreads instances across the zones of a region. A new revision only gets traffic
-  once it has started.
+  once it has started. If it fails to start, the old revision keeps serving.
 - `lifespan` opens the database pool with `wait=True`. A revision that cannot reach the database
   fails to start and gets no traffic.
-- Cloud SQL runs with regional HA: a standby in a second zone takes over automatically. It also
-  has automated backups and point-in-time recovery.
+- The database is zonal, with daily backups. For production, set
+  `availability_type = "REGIONAL"`: a standby in a second zone then takes over automatically.
 - If the main LLM fails, LiteLLM uses the fallback model. A question with no match is answered
   without the LLM.
 
@@ -120,8 +147,9 @@ flowchart LR
 
 - The API is stateless. Each instance only holds the pool and the model in memory; the data lives
   in Postgres. Any instance can serve any request, so Cloud Run can add instances freely.
-- Each instance has its own pool. `max instances × DB_POOL_SIZE` must stay below the Cloud SQL
-  `max_connections`. For example, 10 × 5 = 50, below 100.
+- Each instance has its own pool of `DB_POOL_SIZE` (5) connections. `db-f1-micro` allows 25
+  connections, so `max_instance_count` is 3: 3 × 5 = 15, plus 1 for a running job, stays below
+  25. A bigger tier allows more instances.
 - Embedding the question is the CPU-heavy part of a request. It runs on the instance's own CPU, so
   more traffic means more instances, not a bigger database.
 - The HNSW index keeps vector search fast as the number of chunks grows. Ingest only embeds new or
@@ -136,24 +164,30 @@ flowchart LR
 - **Cloud Run** charges per use and runs with `min-instances=0`, so it scales to zero and costs
   nothing when idle. The first request after an idle period waits for a cold start of about
   6 seconds, mostly loading the model. The image precompiles its Python files to keep that short.
-- **Cloud SQL** is the fixed cost. Use the smallest tier without HA for the demo, and HA only in
-  production.
+- **Cloud SQL** is the only fixed cost. It uses the smallest tier, and the connector adds nothing
+  to the bill.
+- **Destroy** removes everything Terraform created, including Cloud SQL, so a demo that is not in
+  use costs nothing. Deploy brings it back with fresh data in a few minutes.
 - **Embeddings** run inside the container, so there is no per-request embedding API cost. The
   price is 2 GiB of memory per instance.
 - **LLM:** the main model is free, and the fallback is a low-cost paid model. Questions with no
   match never call the LLM.
-- **Limits:** a billing alert and a `--max-instances` cap bound the spend.
+- **Limits:** a billing alert and the cap of 3 instances bound the spend.
 
 **Security**
 
-- **Secrets:** there are none in the code or the images. `search/.dockerignore` keeps `.env` out
-  of the image. On GCP, Secret Manager provides the secrets at runtime, and `search` holds them as
-  `SecretStr`.
-- **Network:** the database only has a private IP.
-- **Least privilege:** each service account can only read its own secrets and connect to Cloud
-  SQL. CI deploys through Workload Identity Federation instead of a stored key.
-- **Containers:** both run as a non-root user (`app`). The search image is built in two stages,
-  so uv and the lock files stay out of the image that runs.
+- **Secrets:** there are none in the code, the images or GitHub. The database password is random,
+  made by Terraform and stored in Secret Manager. `search` holds secrets as `SecretStr`.
+- **Terraform state:** it holds the database password, so the bucket has public access blocked.
+  Only the deployer and the project's owners and editors can read it.
+- **Network:** the database allows no networks. Only callers with `cloudsql.client` can connect,
+  through the connector. For production, a private IP removes the public address too.
+- **Least privilege:**
+  - The jobs account can only use Cloud SQL and read `database-url`.
+  - The search account can also read `llm-api`.
+  - GitHub can only sign in as the deployer from this repository's `main` branch.
+- **Containers:** all three run as a non-root user (`app`). The search image is built in two
+  stages, so uv and the lock files stay out of the image that runs.
 - **Input:** questions are limited to 1000 characters. The LLM is told to answer only from the
   passages it is given.
 - **Before real users:** add authentication (Cloud Run IAM or API Gateway) and rate limits in front

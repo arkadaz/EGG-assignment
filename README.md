@@ -4,17 +4,20 @@ A question-answering service over 10 Wikipedia articles. It finds the passages t
 question (RAG with pgvector and PostgreSQL full-text search) and has an LLM answer from those
 passages, with the sources attached.
 
-It is two projects that share only the database:
+It is three projects that share only the database, plus the Terraform that deploys them:
 
-| Project | What it does | Runs as |
+| Folder | What it does | Runs as |
 |---|---|---|
-| [`ingest/`](ingest) | `ingest.py` reads `data/wikipedia.jsonl`, splits each article into paragraphs, embeds them and stores the documents and chunks in PostgreSQL. A SHA-256 hash of every document and chunk lets it skip what is already stored. | A job that runs once and exits. |
+| [`migrate/`](migrate) | `migrate.py` applies the SQL files in `migrations/` in name order. It records each file in a `schema_migrations` table, so a file is applied only once. | A job that runs before ingest and exits. |
+| [`ingest/`](ingest) | `ingest.py` reads `data/wikipedia.jsonl`, splits each article into paragraphs, embeds them and stores the documents and chunks in PostgreSQL. A SHA-256 hash of every document and chunk lets it skip what is already stored. | A job that runs and exits. |
 | [`search/`](search) | `POST /ask`: hybrid search and an LLM answer with sources. `POST /agent/ask`: a Google ADK agent that can search several times before it answers. `/`: the ADK web UI. | A FastAPI service. |
+| [`infrastructure/`](infrastructure) | Terraform for GCP: Cloud SQL, Cloud Run, Secret Manager, Artifact Registry. Its state is kept in a GCS bucket. | GitHub Actions, when you start Deploy or Destroy. |
 
-The contract between the two is the schema in [`db/init.sql`](db/init.sql) and the embedding model
+The contract between the projects is the schema in
+[`migrate/migrations/`](migrate/migrations) and the embedding model
 `google/embeddinggemma-300m`, named in both [`ingest/ingest.py`](ingest/ingest.py) and
 [`fastembed_embedder.py`](search/app/adapters/outbound/embeddings/fastembed_embedder.py).
-The two must stay the same.
+The two model names must stay the same.
 
 Stack:
 
@@ -27,7 +30,8 @@ Stack:
 - Agent: Google ADK
 - Dataset: 10 Wikipedia articles (CC BY-SA 4.0), 330 paragraphs
 
-How it works and how it would run on GCP: [ARCHITECTURE.md](ARCHITECTURE.md).
+How it works and how it runs on GCP: [ARCHITECTURE.md](ARCHITECTURE.md). How to set up GCP and
+GitHub and deploy it yourself, step by step: [DEPLOY.md](DEPLOY.md).
 
 ## Run locally
 
@@ -41,12 +45,18 @@ docker compose up --build
 In `.env`, set `POSTGRES_PASSWORD` (letters and digits). Optionally set `LLM_API` to an
 OpenRouter key. Without it, `/ask` uses the mock LLM and the agent is off. Git ignores `.env`.
 
-The first build downloads the 1.2 GB embedding model into each image, so it takes a few minutes.
-Then Postgres applies `db/init.sql`, `ingest` loads the data and exits, and `search` starts:
+The first build downloads the 1.2 GB embedding model into the ingest and search images, so it
+takes a few minutes. Then each service starts once the one before it is done:
+
+1. `db` starts and becomes healthy.
+2. `migrate` creates the tables and exits.
+3. `ingest` loads the data and exits.
+4. `search` starts.
 
 ```
-ingest-1  | Documents: 10 new, 0 duplicates skipped
-ingest-1  | Chunks: 330 new, 0 duplicates skipped
+migrate-1  | 001_create_tables.sql: applied
+ingest-1   | Documents: 10 new, 0 duplicates skipped
+ingest-1   | Chunks: 330 new, 0 duplicates skipped
 ```
 
 - http://localhost:8000/docs is the API.
@@ -115,7 +125,8 @@ This stops everything and deletes the database.
 
 ## Configuration
 
-Both projects read environment variables. `search` also reads a `.env` file inside `search/`; see
+All three projects read environment variables. `search` also reads a `.env` file inside
+`search/`; see
 [`search/.env.example`](search/.env.example). Nothing secret is in the code or the images. Compose
 takes `POSTGRES_PASSWORD` and `LLM_API` from the git-ignored `.env`. `search` holds
 `DATABASE_URL` and `LLM_API` as `SecretStr`, so printing the settings shows `**********`. On GCP
@@ -124,7 +135,7 @@ they come from Secret Manager.
 | Variable | Used by | Default |
 |---|---|---|
 | `POSTGRES_PASSWORD` | compose | required |
-| `DATABASE_URL` | both | required (compose builds it from `POSTGRES_PASSWORD`) |
+| `DATABASE_URL` | all three | required (compose builds it from `POSTGRES_PASSWORD`) |
 | `DB_POOL_SIZE` / `DB_POOL_TIMEOUT` | search | `5` / `10` seconds |
 | `TOP_K` | search | `4` passages per answer |
 | `MIN_SCORE` | search | `0.4`, passages below this cosine similarity are dropped |
@@ -149,11 +160,20 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
+`ingest/` and `migrate/` have no tests. Lint each of them the same way, for example `ingest/`:
+
 ```bash
 cd ingest
 uv sync
 uv run ruff check .
 uv run ruff format --check .
+```
+
+```bash
+cd infrastructure
+terraform fmt -check
+terraform init -backend=false
+terraform validate
 ```
 
 The tests in [`search/tests/test_api.py`](search/tests/test_api.py) replace the database, the
@@ -165,12 +185,18 @@ model and the LLM with fakes, so they need nothing else running. They check that
 - `/agent/ask` returns 503 without a key
 - the prompt numbers the passages
 
-CI runs the same commands and builds both Docker images on every push:
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+There are three workflows in [`.github/workflows/`](.github/workflows):
+
+| Workflow | Starts | What it does |
+|---|---|---|
+| `ci.yml` | on every push and pull request | the commands above, plus a Docker build of all three images |
+| `deploy.yml` | only when you click Run workflow | Terraform apply, then the migrate job, then the ingest job, then the new search image |
+| `destroy.yml` | only when you click Run workflow | Terraform destroy, which removes everything it created |
 
 ## Structure
 
-`ingest/` is one script. `search/` uses a hexagonal (ports and adapters) layout:
+`migrate/` and `ingest/` are one script each. `search/` uses a hexagonal (ports and adapters)
+layout:
 
 ```
 search/app/
@@ -189,10 +215,25 @@ search/app/
   main.py                          wiring: lifespan builds everything once
   settings.py                      every setting, read once at startup
 
+migrate/
+  migrate.py                       apply each new file in migrations/ and record it
+  migrations/001_create_tables.sql documents, chunks, the HNSW and full-text indexes
+
 ingest/
   ingest.py                        hash -> skip what is stored -> embed new paragraphs -> insert
   data/wikipedia.jsonl
+
+infrastructure/                    Terraform, one file per area
+  main.tf                          providers and the GCS state bucket
+  database.tf                      Cloud SQL instance, database and user
+  secrets.tf                       DATABASE_URL secret, the existing llm-api secret
+  service_accounts.tf              one account for the jobs, one for search, and their access
+  cloud_run.tf                     migrate job, ingest job, search service
+  registry.tf                      Artifact Registry for the images
 ```
+
+To change the schema, add a new file such as `migrate/migrations/002_add_column.sql`. Never edit
+a file that has already been applied.
 
 In `search/`, imports only point inward: `adapters` → `application` → `domain`.
 
