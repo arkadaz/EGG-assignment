@@ -50,7 +50,8 @@ async def lifespan(app: FastAPI):
         settings.database_url.get_secret_value(), settings.db_pool_size, settings.db_pool_timeout
     )
     vectors = PgVectorSearch(pool, settings.search_candidates, settings.rrf_k)
-    search_docs = SearchDocs(FastEmbedEmbedder(), vectors, settings.top_k, settings.min_score)
+    embedder = FastEmbedEmbedder(settings.embedding_model_path)
+    search_docs = SearchDocs(embedder, vectors, settings.top_k, settings.min_score)
     app.state.ask_question = AskQuestion(search_docs, create_llm(settings))
 
     app.state.ask_agent = None

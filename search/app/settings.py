@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: SecretStr
     allowed_email: str = Field(min_length=1)
     google_client_id: str = Field(min_length=1)
+    embedding_model_path: str = "/models/embeddinggemma-300m"
     db_pool_size: int = 5
     db_pool_timeout: float = 10.0
     top_k: int = 4

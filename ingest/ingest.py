@@ -7,6 +7,7 @@ from fastembed import TextEmbedding
 from pgvector.psycopg import register_vector
 
 EMBEDDING_MODEL = "google/embeddinggemma-300m"
+EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/models/embeddinggemma-300m")
 DATASET_PATH = os.environ.get("DATASET_PATH", "data/wikipedia.jsonl")
 MIN_PARAGRAPH_LENGTH = int(os.environ.get("MIN_PARAGRAPH_LENGTH", "80"))
 
@@ -82,7 +83,7 @@ def save_chunks(
 
 
 def main() -> None:
-    model = TextEmbedding(EMBEDDING_MODEL)
+    model = TextEmbedding(EMBEDDING_MODEL, specific_model_path=EMBEDDING_MODEL_PATH)
     articles = read_articles(DATASET_PATH)
 
     new_documents = 0

@@ -8,8 +8,8 @@ MODEL_NAME = "google/embeddinggemma-300m"
 
 
 class FastEmbedEmbedder(EmbedderPort):
-    def __init__(self) -> None:
-        self._model = TextEmbedding(MODEL_NAME)
+    def __init__(self, model_path: str) -> None:
+        self._model = TextEmbedding(MODEL_NAME, specific_model_path=model_path)
 
     async def embed_query(self, query: str) -> list[float]:
         text = f"task: search result | query: {query}"
