@@ -63,6 +63,31 @@ password, which is why public access is blocked.
 If the bucket name is taken (bucket names are global), pick another and put it in
 `infrastructure/main.tf` under `backend "gcs"`.
 
+Then create a second bucket for the embedding model and upload the model to it once:
+
+```bash
+gcloud storage buckets create gs://$PROJECT-models --location=$REGION \
+  --uniform-bucket-level-access --public-access-prevention
+
+uvx --from huggingface_hub huggingface-cli download onnx-community/embeddinggemma-300m-ONNX \
+  config.json special_tokens_map.json tokenizer.json tokenizer_config.json \
+  onnx/model.onnx onnx/model.onnx_data \
+  --revision 5090578d9565bb06545b4552f76e6bc2c93e4a66 --local-dir models/embeddinggemma-300m
+
+gcloud storage cp -r models/embeddinggemma-300m gs://$PROJECT-models/
+```
+
+The model is 1.2 GB. Here is why it lives in a bucket rather than in the images:
+
+- **In the images,** every build would download it again and every deploy would push it again.
+- **In the bucket,** it is uploaded once. Cloud Run mounts the bucket read-only at `/models`, so
+  ingest and search read the files from it directly, and nothing downloads the model on a
+  build, a deploy or a start.
+- **Outside Terraform,** the bucket is kept by Destroy, like the state bucket, so the model never
+  has to be uploaded again.
+
+If you use a different bucket name, put it in `infrastructure/variables.tf` as `models_bucket`.
+
 ## 4. Create the deployer account
 
 ```bash
@@ -77,11 +102,17 @@ done
 
 gcloud storage buckets add-iam-policy-binding gs://$PROJECT-tfstate \
   --member=serviceAccount:$DEPLOYER --role=roles/storage.objectAdmin
+
+gcloud storage buckets add-iam-policy-binding gs://$PROJECT-models \
+  --member=serviceAccount:$DEPLOYER --role=roles/storage.admin
 ```
 
 GitHub Actions runs as this account. Terraform creates Cloud SQL, Cloud Run, images, secrets,
-accounts and their permissions, so it needs one role for each of those. The last command lets it
-read and write the state file.
+accounts and their permissions, so it needs one role for each of those. The last two commands are
+for the buckets:
+
+- **State bucket:** the deployer can read and write the state file.
+- **Models bucket:** the deployer can give the app accounts read access to the model.
 
 ## 5. Let GitHub sign in as the deployer
 
@@ -203,8 +234,8 @@ branch `main` → **Run workflow**. Four jobs run, one after the other:
 |---|---|---|
 | `infrastructure` | `terraform apply`. The first run creates Cloud SQL, which is the slow part. | about 10 to 15 minutes the first time, under a minute after that |
 | `migrate` | builds and pushes the migrate image, then runs the job | 1 to 2 minutes |
-| `ingest` | builds and pushes the ingest image, then runs the job | several minutes (the image holds the 1.2 GB model) |
-| `search` | builds and pushes the search image, then moves the service to it | several minutes |
+| `ingest` | builds and pushes the ingest image, then runs the job | about 3 to 5 minutes |
+| `search` | builds and pushes the search image, then moves the service to it | about 2 to 3 minutes |
 
 Then open `https://egg-rag-search-<project number>.<region>.run.app/`:
 

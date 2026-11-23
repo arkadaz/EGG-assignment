@@ -24,7 +24,10 @@ Stack:
 - Python 3.12 with uv, FastAPI, Docker Compose
 - PostgreSQL 16 with pgvector (HNSW cosine index) and full-text search (GIN index)
 - Embeddings: `google/embeddinggemma-300m` through fastembed (ONNX). It runs inside the
-  containers, produces 768 numbers per text and needs no API key.
+  containers, produces 768 numbers per text and needs no API key. The model files (1.2 GB) are
+  not in the images:
+  - **On GCP:** they are read from a Cloud Storage bucket mounted at `/models`.
+  - **Locally:** they are read from the `models/` folder.
 - LLM through LiteLLM: the free `openrouter/nvidia/nemotron-3.5-lightning:free`, falling back to
   `openrouter/z-ai/glm-5.3-flash` when it fails, or a mock LLM when no `LLM_API` key is set
 - Agent: Google ADK
@@ -36,6 +39,25 @@ GitHub and deploy it yourself, step by step: [DEPLOY.md](DEPLOY.md).
 ## Run locally
 
 You need Docker.
+
+First get the embedding model once into `models/embeddinggemma-300m`. Git ignores this folder.
+Copy it from the project's bucket:
+
+```bash
+gcloud storage cp -r gs://egg-interview-models/embeddinggemma-300m models/
+```
+
+If you have no access to that bucket, download it from Hugging Face instead. The version is pinned
+to the one this project was tested with:
+
+```bash
+uvx --from huggingface_hub huggingface-cli download onnx-community/embeddinggemma-300m-ONNX \
+  config.json special_tokens_map.json tokenizer.json tokenizer_config.json \
+  onnx/model.onnx onnx/model.onnx_data \
+  --revision 5090578d9565bb06545b4552f76e6bc2c93e4a66 --local-dir models/embeddinggemma-300m
+```
+
+Then start everything:
 
 ```bash
 cp .env.example .env
@@ -53,8 +75,8 @@ In `.env`, set:
 
 Git ignores `.env`. Search does not start without `ALLOWED_EMAIL` and `GOOGLE_CLIENT_ID`.
 
-The first build downloads the 1.2 GB embedding model into the ingest and search images, so it
-takes a few minutes. Then each service starts once the one before it is done:
+Compose mounts `models/` read-only into ingest and search, so nothing downloads the model during
+a build or a start. Each service starts once the one before it is done:
 
 1. `db` starts and becomes healthy.
 2. `migrate` creates the tables and exits.
@@ -170,6 +192,7 @@ they come from Secret Manager.
 | `LLM_REASONING_EFFORT` | search | `low` |
 | `AGENT_MAX_LLM_CALLS` | search | `6`, the most LLM calls the agent makes per question |
 | `DATASET_PATH` / `MIN_PARAGRAPH_LENGTH` | ingest | `data/wikipedia.jsonl` / `80` characters |
+| `EMBEDDING_MODEL_PATH` | ingest and search | `/models/embeddinggemma-300m`, the folder with the model files |
 
 `MIN_SCORE` is 0.4 because of measured scores on this dataset. Questions the articles answer score
 0.60 to 0.72; unrelated questions score 0.09 to 0.19.

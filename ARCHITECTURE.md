@@ -108,13 +108,14 @@ flowchart LR
 
 | Service | Role |
 |---|---|
-| Cloud Run service `egg-rag-search` | Runs the stateless API over HTTPS. It scales from 0 to 3 instances, with 1 vCPU and 2 GiB each: we measured 1.4 GiB with the model loaded. |
+| Cloud Run service `egg-rag-search` | Runs the stateless API over HTTPS. It scales from 0 to 3 instances, with 1 vCPU and 4 GiB each. The model takes 1.4 GiB in the process, and Cloud Run also counts the model file it reads, so 2 GiB is not enough. |
 | Cloud Run job `egg-rag-migrate` | Applies new migration files, then exits. |
-| Cloud Run job `egg-rag-ingest` | Loads the data apart from user traffic, then exits. It is safe to run again at any time, because the hashes skip what is stored. It gets 2 vCPU and 2 GiB, because it embeds every new paragraph. |
+| Cloud Run job `egg-rag-ingest` | Loads the data apart from user traffic, then exits. It is safe to run again at any time, because the hashes skip what is stored. It gets 2 vCPU and 4 GiB. At 2 GiB it ran out of memory on Cloud Run, although it fits in 2 GiB under Docker. |
+| Cloud Storage bucket `egg-interview-models` | Holds the embedding model (1.2 GB), uploaded once. Cloud Run mounts it read-only at `/models` in the ingest job and the search service, so the model is not in any image and nothing downloads it. It is part of the one-time setup, so Destroy keeps it. |
 | Cloud SQL for PostgreSQL 16 | Stores the documents and chunks, with the pgvector HNSW index and the full-text GIN index. Smallest tier (`db-f1-micro`), with daily backups. |
 | Cloud SQL connector | Cloud Run's built-in connection to Cloud SQL. It is encrypted and checks the caller's IAM role (`cloudsql.client`). The database has a public IP but allows no networks, so this connector is the only way in. |
 | Secret Manager | `database-url` is created by Terraform with a random password. `llm-api` is created once by hand. Both are passed to the containers as environment variables. |
-| Artifact Registry | Stores the three images. Each one is tagged with the Git commit it was built from. |
+| Artifact Registry | Stores the three images, each tagged with the Git commit it was built from. Without the model they are small: search 1 GB, ingest 0.5 GB, migrate 0.3 GB. |
 | Terraform | Creates everything above from `infrastructure/`. Its state lives in a versioned GCS bucket, so every run starts from the same state, and a lock stops two runs at once. |
 | GitHub Actions | `ci.yml` checks every push. `deploy.yml` and `destroy.yml` only run when you click them. They sign in to GCP with Workload Identity Federation, so no key is stored in GitHub. |
 | LLM provider (OpenRouter) | Writes the answer from the passages. It is called through LiteLLM, so changing the provider or model only changes `LLM_MODEL`. |
@@ -164,13 +165,15 @@ that are already in place.
 
 - **Cloud Run** charges per use and runs with `min-instances=0`, so it scales to zero and costs
   nothing when idle. The first request after an idle period waits for a cold start of about
-  6 seconds, mostly loading the model. The image precompiles its Python files to keep that short.
+  6 seconds, mostly loading the model from the bucket. The image precompiles its Python files to
+  keep that short.
 - **Cloud SQL** is the only fixed cost. It uses the smallest tier, and the connector adds nothing
   to the bill.
 - **Destroy** removes everything Terraform created, including Cloud SQL, so a demo that is not in
   use costs nothing. Deploy brings it back with fresh data in a few minutes.
 - **Embeddings** run inside the container, so there is no per-request embedding API cost. The
-  price is 2 GiB of memory per instance.
+  price is 4 GiB of memory per instance, paid only while an instance runs. The model costs about
+  3 cents a month to store in the bucket.
 - **LLM:** the main model is free, and the fallback is a low-cost paid model. Questions with no
   match never call the LLM.
 - **Limits:** a billing alert and the cap of 3 instances bound the spend.
