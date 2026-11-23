@@ -1,0 +1,34 @@
+[project]
+name = "egg-rag-search"
+version = "0.1.0"
+description = "RAG search API: answers questions from pgvector"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.165.0",
+    "fastembed>=0.9.1",
+    "google-adk>=2.15.0",
+    "litellm>=1.110.2",
+    "pgvector>=0.5.1",
+    "psycopg-pool>=3.3.3",
+    "psycopg[binary]>=3.3.9",
+    "pydantic-settings>=2.16.3",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16.2",
+    "pytest>=9.2.0",
+    "ruff>=0.17.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
