@@ -8,7 +8,7 @@ There are two kinds of setup:
 
 | What | Made by | Why |
 |---|---|---|
-| APIs, state bucket, deployer account, GitHub sign-in, LLM key, Google sign-in client | you, once: `gcloud` in steps 1 to 6, the Console in step 7 | Terraform needs them before it can run, the LLM key is something only you have, and Google has no API for creating the sign-in client. |
+| APIs, state bucket, model bucket with the model, deployer account, GitHub sign-in, LLM key, Google sign-in client | you, once: `gcloud` in steps 1 to 6, the Console in step 7 | Terraform needs some of them before it can run. The model and the LLM key are data that only you upload. Google has no API for creating the sign-in client. Destroy keeps all of them. |
 | Cloud SQL, Cloud Run, images, `database-url` secret, app accounts | Terraform, from `infrastructure/` | These are what Deploy creates and Destroy removes. |
 
 ## What you need

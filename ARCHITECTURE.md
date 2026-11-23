@@ -98,6 +98,8 @@ flowchart LR
   secrets[Secret Manager] -.->|DATABASE_URL, LLM_API| api
   secrets -.->|DATABASE_URL| migrate
   secrets -.->|DATABASE_URL| ingest
+  models[("Cloud Storage<br/>egg-interview-models")] -.->|model, read-only at /models| api
+  models -.->|model, read-only at /models| ingest
   gh[GitHub Actions] -->|terraform apply| tf[Terraform]
   tf -->|state| gcs[(GCS bucket)]
   gh -->|push images| registry[Artifact Registry]
@@ -116,7 +118,7 @@ flowchart LR
 | Cloud SQL connector | Cloud Run's built-in connection to Cloud SQL. It is encrypted and checks the caller's IAM role (`cloudsql.client`). The database has a public IP but allows no networks, so this connector is the only way in. |
 | Secret Manager | `database-url` is created by Terraform with a random password. `llm-api` is created once by hand. Both are passed to the containers as environment variables. |
 | Artifact Registry | Stores the three images, each tagged with the Git commit it was built from. Without the model they are small: search 1 GB, ingest 0.5 GB, migrate 0.3 GB. |
-| Terraform | Creates everything above from `infrastructure/`. Its state lives in a versioned GCS bucket, so every run starts from the same state, and a lock stops two runs at once. |
+| Terraform | Creates everything above from `infrastructure/`, except the model bucket and the `llm-api` secret. Those two hold data you upload once, so they are one-time setup and Destroy keeps them. Its state lives in a versioned GCS bucket, so every run starts from the same state, and a lock stops two runs at once. |
 | GitHub Actions | `ci.yml` checks every push. `deploy.yml` and `destroy.yml` only run when you click them. They sign in to GCP with Workload Identity Federation, so no key is stored in GitHub. |
 | LLM provider (OpenRouter) | Writes the answer from the passages. It is called through LiteLLM, so changing the provider or model only changes `LLM_MODEL`. |
 
@@ -165,8 +167,8 @@ that are already in place.
 
 - **Cloud Run** charges per use and runs with `min-instances=0`, so it scales to zero and costs
   nothing when idle. The first request after an idle period waits for a cold start of about
-  6 seconds, mostly loading the model from the bucket. The image precompiles its Python files to
-  keep that short.
+  8 seconds. On Cloud Run the app's startup took 7.6 s, mostly loading the model from the bucket.
+  The image precompiles its Python files to keep that short.
 - **Cloud SQL** is the only fixed cost. It uses the smallest tier, and the connector adds nothing
   to the bill.
 - **Destroy** removes everything Terraform created, including Cloud SQL, so a demo that is not in
