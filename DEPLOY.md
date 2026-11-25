@@ -13,8 +13,9 @@ There are two places to run the project:
 docker compose up --build
 ```
 
-Then open http://localhost:8000. Compose builds the three images and starts db, migrate, ingest
-and search in that order. Locally there is no Terraform and no GitHub Actions.
+Then open http://localhost:8000/docs and sign in with Google. Compose builds the three images and
+starts db, migrate, ingest and search in that order. Locally there is no Terraform and no GitHub
+Actions.
 
 Before the first run, you need `.env` and the model in `models/`. The
 [README](README.md#run-locally) shows both.
@@ -295,7 +296,9 @@ It works on their next request, with no restart. `DELETE FROM users WHERE email 
 them out the same way.
 
 Every request is logged as one JSON line. Find them in **Cloud Run** → `egg-rag-search` →
-**Logs**, and filter by `jsonPayload.user`, `jsonPayload.path` or `jsonPayload.status`.
+**Logs**, and filter by `jsonPayload.user`, `jsonPayload.path` or `jsonPayload.status`. To find
+one request, filter by `jsonPayload.request_id`: the value of the `X-Request-ID` header in its
+response.
 
 Cloud Run also gives the service an older, random-looking address. Google sign-in refuses it,
 because it is not in the client's JavaScript origins, so always use the one with the project
@@ -317,9 +320,9 @@ curl -X POST <url>/ask -H "Content-Type: application/json" \
 - the app accounts
 
 What stays is the setup from steps 2 to 7, including the registry with the images, which costs
-almost nothing. The next Deploy builds
-everything again with a new database name (a random suffix), because Google blocks a deleted
-Cloud SQL name for about a week.
+almost nothing. The next Deploy builds everything again with a new database name (a random
+suffix), because Google blocks a deleted Cloud SQL name for about a week. The new database is
+empty, so migrate adds `allowed_email` again, and anyone else must be added to `users` again.
 
 ### When something fails
 
@@ -328,9 +331,14 @@ Cloud SQL name for about a week.
   role from step 4.
 - **If the migrate or ingest run fails,** `terraform apply` stops with an error, and search keeps
   its old image. Its logs are in Cloud Run → Jobs → the job → the failed execution → Logs.
-  - migrate prints one line per migration file.
+  - migrate prints one line per migration file, then `first user: in the users table`.
   - ingest prints how many documents and chunks were new or skipped.
 
   Fix the cause and push. The new commit gets a new tag, so the next Deploy runs both jobs again.
 - **If the search service does not start,** look at its logs. The usual causes are a missing
   `llm-api` secret version, or a database without tables because migrate did not run.
+- **If sign-in says "This Google account is not allowed",** the email is not in the `users`
+  table. Add it as in step 9. If Google refuses before that, the email is not a test user
+  (step 7).
+- **If a request returns 422,** the body is not what the endpoint expects, for example JSON with a
+  trailing comma, or a question over 1000 characters. The response says which part is wrong.
