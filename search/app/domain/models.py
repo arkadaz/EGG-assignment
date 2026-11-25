@@ -14,3 +14,4 @@ class Answer:
     answer: str
     sources: list[Passage]
     prompt_version: str
+    session_id: str | None = None

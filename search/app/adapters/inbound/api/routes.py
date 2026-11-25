@@ -14,6 +14,10 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
 
 
+class AgentAskRequest(AskRequest):
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 def get_ask_question(request: Request) -> AskQuestion:
     return request.app.state.ask_question
 
@@ -33,6 +37,6 @@ async def ask(
 
 @router.post("/agent/ask")
 async def ask_agent(
-    body: AskRequest, ask_agent: Annotated[AskAgent, Depends(get_ask_agent)]
+    body: AgentAskRequest, ask_agent: Annotated[AskAgent, Depends(get_ask_agent)]
 ) -> Answer:
-    return await ask_agent.ask(body.question)
+    return await ask_agent.ask(body.question, body.session_id)

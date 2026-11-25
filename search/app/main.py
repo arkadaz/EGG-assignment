@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.sessions import BaseSessionService, DatabaseSessionService
 
 from app.adapters.inbound.adk_ui.agent_loader import SingleAgentLoader
 from app.adapters.inbound.api.routes import router
@@ -31,7 +32,7 @@ def create_llm(settings: Settings) -> LLMPort:
     )
 
 
-def create_agent(settings: Settings) -> AdkAgent | None:
+def create_agent(settings: Settings, sessions: BaseSessionService) -> AdkAgent | None:
     api_key = settings.llm_api.get_secret_value()
     if not api_key:
         return None
@@ -41,6 +42,7 @@ def create_agent(settings: Settings) -> AdkAgent | None:
         api_key,
         settings.llm_reasoning_effort,
         settings.agent_max_llm_calls,
+        sessions,
     )
 
 
@@ -54,13 +56,21 @@ async def lifespan(app: FastAPI):
     search_docs = SearchDocs(embedder, vectors, settings.top_k, settings.min_score)
     app.state.ask_question = AskQuestion(search_docs, create_llm(settings))
 
+    sessions = DatabaseSessionService(
+        db_url=settings.database_url.get_secret_value().replace(
+            "postgresql://", "postgresql+psycopg://", 1
+        ),
+        pool_size=2,
+        max_overflow=0,
+    )
     app.state.ask_agent = None
-    agent = create_agent(settings)
+    agent = create_agent(settings, sessions)
     if agent is not None:
         app.state.ask_agent = AskAgent(agent, search_docs, vectors)
         agent_loader.agent = agent.build(KnowledgeBaseTools(search_docs, vectors).as_list())
 
     yield
+    await sessions.close()
     await pool.close()
 
 

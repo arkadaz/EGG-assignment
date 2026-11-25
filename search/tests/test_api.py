@@ -39,7 +39,11 @@ class InMemorySearch(VectorSearchPort):
 
 
 class FakeAgent(AgentPort):
-    async def run(self, question, tools):
+    def __init__(self):
+        self.session_ids = []
+
+    async def run(self, question, tools, session_id):
+        self.session_ids.append(session_id)
         search_knowledge_base, list_documents = tools
         await search_knowledge_base("first try")
         await search_knowledge_base(question)
@@ -86,6 +90,21 @@ def test_agent_lists_each_found_passage_once():
 
     assert body["answer"] == "Found in Kubernetes"
     assert [source["title"] for source in body["sources"]] == ["PostgreSQL"]
+
+
+def test_agent_continues_the_chat_it_is_given():
+    agent = FakeAgent()
+    app.state.ask_agent = AskAgent(agent, search_docs_over([POSTGRES]), InMemorySearch([POSTGRES]))
+    client = signed_in()
+
+    first = client.post("/agent/ask", json={"question": "What is PostgreSQL?"}).json()
+    second = client.post(
+        "/agent/ask", json={"question": "Tell me more", "session_id": first["session_id"]}
+    ).json()
+
+    assert first["session_id"]
+    assert second["session_id"] == first["session_id"]
+    assert agent.session_ids == [first["session_id"], first["session_id"]]
 
 
 def test_agent_needs_an_llm_key():
