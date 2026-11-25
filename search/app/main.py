@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
         db_url=settings.database_url.get_secret_value().replace(
             "postgresql://", "postgresql+psycopg://", 1
         ),
-        pool_size=2,
+        pool_size=settings.session_pool_size,
         max_overflow=0,
     )
     app.state.ask_agent = None
