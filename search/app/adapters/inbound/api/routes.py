@@ -37,6 +37,8 @@ async def ask(
 
 @router.post("/agent/ask")
 async def ask_agent(
-    body: AgentAskRequest, ask_agent: Annotated[AskAgent, Depends(get_ask_agent)]
+    body: AgentAskRequest,
+    request: Request,
+    ask_agent: Annotated[AskAgent, Depends(get_ask_agent)],
 ) -> Answer:
-    return await ask_agent.ask(body.question, body.session_id)
+    return await ask_agent.ask(body.question, request.state.email, body.session_id)

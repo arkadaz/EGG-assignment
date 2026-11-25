@@ -28,6 +28,11 @@ resource "google_cloud_run_v2_job" "migrate" {
           }
         }
 
+        env {
+          name  = "ALLOWED_EMAIL"
+          value = var.allowed_email
+        }
+
         volume_mounts {
           name       = "cloudsql"
           mount_path = "/cloudsql"
@@ -170,11 +175,6 @@ resource "google_cloud_run_v2_service" "search" {
             version = "latest"
           }
         }
-      }
-
-      env {
-        name  = "ALLOWED_EMAIL"
-        value = var.allowed_email
       }
 
       env {

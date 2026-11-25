@@ -39,9 +39,9 @@ class AskAgent:
     search_docs: SearchDocs
     vectors: VectorSearchPort
 
-    async def ask(self, question: str, session_id: str | None) -> Answer:
+    async def ask(self, question: str, user_id: str, session_id: str | None) -> Answer:
         if session_id is None:
             session_id = str(uuid4())
         tools = KnowledgeBaseTools(self.search_docs, self.vectors, keep_sources=True)
-        text = await self.agent.run(question, tools.as_list(), session_id)
+        text = await self.agent.run(question, tools.as_list(), user_id, session_id)
         return Answer(text, list(tools.sources.values()), PROMPT_VERSION, session_id)

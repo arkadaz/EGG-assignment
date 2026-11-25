@@ -8,6 +8,7 @@ from app.adapters.inbound.adk_ui.agent_loader import SingleAgentLoader
 from app.adapters.inbound.api.routes import router
 from app.adapters.inbound.login.google_login import GoogleLogin, login_router, require_login
 from app.adapters.outbound.agent.adk_agent import AdkAgent
+from app.adapters.outbound.db.pg_user_directory import PgUserDirectory
 from app.adapters.outbound.db.pgvector_search import PgVectorSearch
 from app.adapters.outbound.db.pool import open_pool
 from app.adapters.outbound.embeddings.fastembed_embedder import FastEmbedEmbedder
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI):
     pool = await open_pool(
         settings.database_url.get_secret_value(), settings.db_pool_size, settings.db_pool_timeout
     )
+    app.state.users = PgUserDirectory(pool)
     vectors = PgVectorSearch(pool, settings.search_candidates, settings.rrf_k)
     embedder = FastEmbedEmbedder(settings.embedding_model_path)
     search_docs = SearchDocs(embedder, vectors, settings.top_k, settings.min_score)
@@ -81,7 +83,7 @@ app = get_fast_api_app(
     use_local_storage=False,
     lifespan=lifespan,
 )
-app.state.google_login = GoogleLogin(settings.google_client_id, settings.allowed_email)
+app.state.google_login = GoogleLogin(settings.google_client_id)
 app.include_router(login_router)
 app.middleware("http")(require_login)
 app.include_router(router)

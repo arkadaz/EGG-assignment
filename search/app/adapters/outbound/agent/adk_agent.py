@@ -39,7 +39,7 @@ class AdkAgent(AgentPort):
         )
 
     async def run(
-        self, question: str, tools: list[Callable[..., Awaitable]], session_id: str
+        self, question: str, tools: list[Callable[..., Awaitable]], user_id: str, session_id: str
     ) -> str:
         runner = Runner(
             agent=self.build(tools),
@@ -52,7 +52,7 @@ class AdkAgent(AgentPort):
 
         answer = ""
         async for event in runner.run_async(
-            user_id="api", session_id=session_id, new_message=message, run_config=run_config
+            user_id=user_id, session_id=session_id, new_message=message, run_config=run_config
         ):
             if event.is_final_response() and event.content and event.content.parts:
                 answer = final_text(event.content.parts)
