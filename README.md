@@ -186,10 +186,10 @@ This stops everything and deletes the database.
 
 ## Configuration
 
-All three projects read environment variables. `search` also reads a `.env` file inside
-`search/`; see
-[`search/.env.example`](search/.env.example). Nothing secret is in the code or the images. Compose
-takes `POSTGRES_PASSWORD` and `LLM_API` from the git-ignored `.env`. `search` holds
+All three projects read environment variables. When you run `search` outside Docker, it also
+reads a `.env` file inside `search/`; see [`search/.env.example`](search/.env.example). Nothing
+secret is in the code or the images. Compose takes `POSTGRES_PASSWORD`, `LLM_API`,
+`ALLOWED_EMAIL` and `GOOGLE_CLIENT_ID` from the git-ignored `.env` in the root folder. `search` holds
 `DATABASE_URL` and `LLM_API` as `SecretStr`, so printing the settings shows `**********`. On GCP
 they come from Secret Manager.
 
@@ -210,7 +210,7 @@ they come from Secret Manager.
 | `LLM_REASONING_EFFORT` | search | `low` |
 | `AGENT_MAX_LLM_CALLS` | search | `6`, the most LLM calls the agent makes per question |
 | `DATASET_PATH` / `MIN_PARAGRAPH_LENGTH` | ingest | `data/wikipedia.jsonl` / `80` characters |
-| `EMBEDDING_MODEL_PATH` | ingest and search | `/models/embeddinggemma-300m`, the folder with the model files |
+| `EMBEDDING_MODEL_PATH` | ingest and search | `/models/embeddinggemma-300m`, the folder with the model files. Outside Docker, `search/.env.example` sets it to `../models/embeddinggemma-300m`. |
 
 `MIN_SCORE` is 0.4 because of measured scores on this dataset. Questions the articles answer score
 0.60 to 0.72; unrelated questions score 0.09 to 0.19.

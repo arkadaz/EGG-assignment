@@ -9,7 +9,7 @@ flowchart LR
   data[data/wikipedia.jsonl] --> ingest[ingest job]
   ingest -->|documents and chunks| db
   client([Client]) -->|POST /ask, /agent/ask| search[search API]
-  search -->|hybrid search| db
+  search -->|hybrid search, users, chats| db
   search -->|passages| llm[LLM or mock]
 ```
 
@@ -17,7 +17,8 @@ Three programs that share only the database:
 
 - **migrate** owns the schema. It applies new migration files, adds the first user, then exits.
 - **ingest** writes. It turns the articles into embedded chunks, then exits.
-- **search** reads. It answers questions from those chunks.
+- **search** answers questions from those chunks. It also reads the `users` table and keeps the
+  agent's chats.
 
 They always start in the same order: database → migrate → ingest → search. Docker Compose does
 this locally, and the Deploy workflow does it on GCP.
@@ -38,7 +39,8 @@ the schema, add a new numbered file. Never edit one that has already run.
 
 `POST /ask`:
 
-1. The login middleware checks the Google JWT in the cookie and looks the email up in the `users`
+1. The request log middleware starts the clock and picks the request id (see Request logs). The
+   login middleware checks the Google JWT in the cookie and looks the email up in the `users`
    table (see Security). Then FastAPI checks the body: a question of 1 to 1000 characters.
 2. `FastEmbedEmbedder` turns `task: search result | query: <question>` into 768 numbers with
    EmbeddingGemma. It runs in a worker thread, so the server keeps handling other requests.
@@ -53,7 +55,8 @@ the schema, add a new numbered file. Never edit one that has already run.
      base." and does not call the LLM.
    - Otherwise `LiteLLMAdapter` sends the shared `ANSWER_PROMPT` and the numbered passages to
      `LLM_MODEL`, and to `LLM_FALLBACK_MODEL` if that fails.
-6. The response holds the answer, the sources and `prompt_version`.
+6. The response holds the answer, the sources, `prompt_version` and `session_id`, which is
+   `null` for `/ask`. The request log middleware writes one line for the request.
 
 Why the search has two parts:
 
@@ -188,9 +191,10 @@ that are already in place.
 
 - The API is stateless. Each instance only holds the pool and the model in memory; the data lives
   in Postgres. Any instance can serve any request, so Cloud Run can add instances freely.
-- Each instance has two pools: `DB_POOL_SIZE` (5) connections for search and
-  `SESSION_POOL_SIZE` (2) for the agent's chats. `db-f1-micro` allows 25 connections, so `max_instance_count` is 3: 3 × (5 + 2) = 21,
-  plus 1 for a running job, stays below 25. A bigger tier allows more instances.
+- Each instance has two pools: `DB_POOL_SIZE` (5) connections for search and the users lookup,
+  and `SESSION_POOL_SIZE` (2) for the agent's chats. `db-f1-micro` allows 25 connections, so
+  `max_instance_count` is 3: 3 × (5 + 2) = 21, plus 1 for a running job, stays below 25. A
+  bigger tier allows more instances.
 - Embedding the question is the CPU-heavy part of a request. It runs on the instance's own CPU, so
   more traffic means more instances, not a bigger database.
 - The HNSW index keeps vector search fast as the number of chunks grows. Ingest only embeds new or
@@ -240,15 +244,17 @@ that are already in place.
   - **Issuer:** Google
   - **Account:** the email is verified and is in the `users` table
 
-  The JWT expires after one hour. There is no server-side session to steal or keep in sync. Adding
-  or removing a row in `users` takes effect on the next request, with no restart. An empty table
-  lets nobody in, and the app refuses to start without `GOOGLE_CLIENT_ID`. The Google sign-in app
-  stays in Testing mode, so each user must also be a test user: a second lock on top of the
-  `users` table.
+  The JWT expires after one hour. The service keeps no login session of its own, so there is
+  nothing to steal or keep in sync between instances. Adding or removing a row in `users` takes
+  effect on the next request, with no restart, so deleting a row also locks out a token that has
+  not expired yet. An empty table lets nobody in, and the app refuses to start without
+  `GOOGLE_CLIENT_ID`. The Google sign-in app stays in Testing mode, so each user must also be a
+  test user: a second lock on top of the `users` table.
 - **Chats:** each agent chat is stored under the signed-in email, so one user cannot continue
   another user's chat.
-- **Input:** questions are limited to 1000 characters. The LLM is told to answer only from the
-  passages it is given.
+- **Input:** questions are limited to 1000 characters and a `session_id` to 128. The LLM is told
+  to answer only from the passages it is given.
 - **Logs:** each request line holds the signed-in email, so the logs show who did what. They never
   hold the cookie or the JWT.
-- **Before more users:** add rate limits in front of the service.
+- **Before more users:** add rate limits in front of the service, and a job that deletes old
+  chats, because the `events` table only grows.
