@@ -5,6 +5,7 @@ from google.adk.sessions import BaseSessionService, DatabaseSessionService
 
 from app.adapters.inbound.api.routes import router
 from app.adapters.inbound.login.google_login import GoogleLogin, login_router, require_login
+from app.adapters.inbound.request_log import log_request, setup_request_logging
 from app.adapters.outbound.agent.adk_agent import AdkAgent
 from app.adapters.outbound.db.pg_user_directory import PgUserDirectory
 from app.adapters.outbound.db.pgvector_search import PgVectorSearch
@@ -19,6 +20,7 @@ from app.application.search_docs import SearchDocs
 from app.settings import Settings
 
 settings = Settings()
+setup_request_logging()
 
 
 def create_llm(settings: Settings) -> LLMPort:
@@ -76,5 +78,6 @@ app = FastAPI(lifespan=lifespan)
 app.state.google_login = GoogleLogin(settings.google_client_id)
 app.include_router(login_router)
 app.middleware("http")(require_login)
+app.middleware("http")(log_request)
 app.include_router(router)
 app.include_router(router, prefix="/api/v1")
