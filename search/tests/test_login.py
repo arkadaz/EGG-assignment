@@ -29,7 +29,7 @@ def test_api_call_without_login_gets_401():
 
 
 def test_page_without_login_goes_to_the_login_page():
-    response = browser().get("/dev-ui/", headers={"Accept": "text/html"})
+    response = browser().get("/docs", headers={"Accept": "text/html"})
 
     assert response.status_code == 307
     assert response.headers["location"] == "/login"

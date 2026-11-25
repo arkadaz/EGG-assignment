@@ -1,10 +1,8 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from google.adk.cli.fast_api import get_fast_api_app
 from google.adk.sessions import BaseSessionService, DatabaseSessionService
 
-from app.adapters.inbound.adk_ui.agent_loader import SingleAgentLoader
 from app.adapters.inbound.api.routes import router
 from app.adapters.inbound.login.google_login import GoogleLogin, login_router, require_login
 from app.adapters.outbound.agent.adk_agent import AdkAgent
@@ -14,14 +12,13 @@ from app.adapters.outbound.db.pool import open_pool
 from app.adapters.outbound.embeddings.fastembed_embedder import FastEmbedEmbedder
 from app.adapters.outbound.llm.litellm_llm import LiteLLMAdapter
 from app.adapters.outbound.llm.mock_llm import MockLLM
-from app.application.ask_agent import AskAgent, KnowledgeBaseTools
+from app.application.ask_agent import AskAgent
 from app.application.ask_question import AskQuestion
 from app.application.ports.llm import LLMPort
 from app.application.search_docs import SearchDocs
 from app.settings import Settings
 
 settings = Settings()
-agent_loader = SingleAgentLoader()
 
 
 def create_llm(settings: Settings) -> LLMPort:
@@ -69,20 +66,13 @@ async def lifespan(app: FastAPI):
     agent = create_agent(settings, sessions)
     if agent is not None:
         app.state.ask_agent = AskAgent(agent, search_docs, vectors)
-        agent_loader.agent = agent.build(KnowledgeBaseTools(search_docs, vectors).as_list())
 
     yield
     await sessions.close()
     await pool.close()
 
 
-app = get_fast_api_app(
-    agents_dir=".",
-    agent_loader=agent_loader,
-    web=True,
-    use_local_storage=False,
-    lifespan=lifespan,
-)
+app = FastAPI(lifespan=lifespan)
 app.state.google_login = GoogleLogin(settings.google_client_id)
 app.include_router(login_router)
 app.middleware("http")(require_login)
