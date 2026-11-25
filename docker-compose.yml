@@ -14,6 +14,7 @@ services:
     build: ./migrate
     environment:
       DATABASE_URL: postgresql://rag:${POSTGRES_PASSWORD}@db:5432/rag
+      ALLOWED_EMAIL: ${ALLOWED_EMAIL}
     depends_on:
       db:
         condition: service_healthy
@@ -33,7 +34,6 @@ services:
     environment:
       DATABASE_URL: postgresql://rag:${POSTGRES_PASSWORD}@db:5432/rag
       LLM_API: ${LLM_API}
-      ALLOWED_EMAIL: ${ALLOWED_EMAIL}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
     volumes:
       - ./models:/models:ro

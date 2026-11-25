@@ -58,7 +58,7 @@
         body: JSON.stringify({ credential: response.credential }),
       });
       if (reply.ok) {
-        window.location.href = "/";
+        window.location.href = "/docs";
         return;
       }
       document.getElementById("error").textContent = "This Google account is not allowed.";

@@ -1,5 +1,6 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 from app.application.ports.agent import AgentPort
 from app.application.ports.vector_search import VectorSearchPort
@@ -38,7 +39,9 @@ class AskAgent:
     search_docs: SearchDocs
     vectors: VectorSearchPort
 
-    async def ask(self, question: str) -> Answer:
+    async def ask(self, question: str, user_id: str, session_id: str | None) -> Answer:
+        if session_id is None:
+            session_id = str(uuid4())
         tools = KnowledgeBaseTools(self.search_docs, self.vectors, keep_sources=True)
-        text = await self.agent.run(question, tools.as_list())
-        return Answer(text, list(tools.sources.values()), PROMPT_VERSION)
+        text = await self.agent.run(question, tools.as_list(), user_id, session_id)
+        return Answer(text, list(tools.sources.values()), PROMPT_VERSION, session_id)

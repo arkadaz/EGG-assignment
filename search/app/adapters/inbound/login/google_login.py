@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 import jwt
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -21,12 +21,11 @@ class GoogleCredential(BaseModel):
 
 
 class GoogleLogin:
-    def __init__(self, client_id: str, allowed_email: str) -> None:
+    def __init__(self, client_id: str) -> None:
         self.client_id = client_id
-        self.allowed_email = allowed_email.lower()
         self.keys = jwt.PyJWKClient(GOOGLE_KEYS_URL)
 
-    def is_allowed(self, token: str) -> bool:
+    def verified_email(self, token: str) -> str | None:
         try:
             signing_key = self.keys.get_signing_key_from_jwt(token)
             claims = jwt.decode(
@@ -37,9 +36,21 @@ class GoogleLogin:
                 issuer=GOOGLE_ISSUERS,
             )
         except jwt.PyJWTError:
-            return False
+            return None
         email = claims.get("email", "").lower()
-        return claims.get("email_verified") is True and email == self.allowed_email
+        if claims.get("email_verified") is not True or not email:
+            return None
+        return email
+
+
+async def known_email(app: FastAPI, token: str) -> str | None:
+    email = await asyncio.to_thread(app.state.google_login.verified_email, token)
+    if email is None:
+        return None
+    role = await app.state.users.role_of(email)
+    if role is None:
+        return None
+    return email
 
 
 @login_router.get("/login")
@@ -50,9 +61,8 @@ async def login_page(request: Request) -> HTMLResponse:
 
 @login_router.post("/auth/google")
 async def sign_in(body: GoogleCredential, request: Request) -> JSONResponse:
-    login = request.app.state.google_login
-    allowed = await asyncio.to_thread(login.is_allowed, body.credential)
-    if not allowed:
+    email = await known_email(request.app, body.credential)
+    if email is None:
         return JSONResponse({"detail": "This Google account is not allowed"}, status_code=403)
 
     response = JSONResponse({"detail": "Signed in"})
@@ -79,8 +89,9 @@ async def require_login(request: Request, call_next):
         return await call_next(request)
 
     token = request.cookies.get(COOKIE_NAME, "")
-    allowed = await asyncio.to_thread(request.app.state.google_login.is_allowed, token)
-    if allowed:
+    email = await known_email(request.app, token)
+    if email is not None:
+        request.state.email = email
         return await call_next(request)
 
     if "text/html" in request.headers.get("accept", ""):

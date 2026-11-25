@@ -6,11 +6,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: SecretStr
-    allowed_email: str = Field(min_length=1)
     google_client_id: str = Field(min_length=1)
     embedding_model_path: str = "/models/embeddinggemma-300m"
     db_pool_size: int = 5
     db_pool_timeout: float = 10.0
+    session_pool_size: int = 2
     top_k: int = 4
     min_score: float = 0.4
     search_candidates: int = 20

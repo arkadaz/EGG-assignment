@@ -1,10 +1,9 @@
 from collections.abc import Awaitable, Callable
-from uuid import uuid4
 
 from google.adk.agents import LlmAgent, RunConfig
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from google.adk.sessions import BaseSessionService
 from google.genai import types
 
 from app.application.ports.agent import AgentPort
@@ -19,6 +18,7 @@ class AdkAgent(AgentPort):
         api_key: str,
         reasoning_effort: str,
         max_llm_calls: int,
+        sessions: BaseSessionService,
     ) -> None:
         self._model = LiteLlm(
             model=model,
@@ -28,6 +28,7 @@ class AdkAgent(AgentPort):
             drop_params=True,
         )
         self._max_llm_calls = max_llm_calls
+        self._sessions = sessions
 
     def build(self, tools: list[Callable[..., Awaitable]]) -> LlmAgent:
         return LlmAgent(
@@ -37,11 +38,13 @@ class AdkAgent(AgentPort):
             tools=tools,
         )
 
-    async def run(self, question: str, tools: list[Callable[..., Awaitable]]) -> str:
+    async def run(
+        self, question: str, tools: list[Callable[..., Awaitable]], user_id: str, session_id: str
+    ) -> str:
         runner = Runner(
             agent=self.build(tools),
             app_name="egg-rag",
-            session_service=InMemorySessionService(),
+            session_service=self._sessions,
             auto_create_session=True,
         )
         message = types.Content(role="user", parts=[types.Part(text=question)])
@@ -49,7 +52,7 @@ class AdkAgent(AgentPort):
 
         answer = ""
         async for event in runner.run_async(
-            user_id="api", session_id=str(uuid4()), new_message=message, run_config=run_config
+            user_id=user_id, session_id=session_id, new_message=message, run_config=run_config
         ):
             if event.is_final_response() and event.content and event.content.parts:
                 answer = final_text(event.content.parts)

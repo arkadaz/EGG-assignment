@@ -12,9 +12,11 @@ from app.application.prompts import PROMPT_VERSION, answer_user_message
 from app.application.search_docs import SearchDocs
 from app.domain.models import Passage
 from app.main import app
-from tests.fake_google import FakeGoogleKeys, google_token
+from tests.fake_google import FRIEND, OWNER, FakeGoogleKeys, google_token
+from tests.fake_users import FakeUserDirectory
 
 app.state.google_login.keys = FakeGoogleKeys()
+app.state.users = FakeUserDirectory({OWNER: "user"})
 
 POSTGRES = Passage(
     "PostgreSQL", "https://example.org/pg", "PostgreSQL is a relational database.", 0.8
@@ -39,7 +41,11 @@ class InMemorySearch(VectorSearchPort):
 
 
 class FakeAgent(AgentPort):
-    async def run(self, question, tools):
+    def __init__(self):
+        self.calls = []
+
+    async def run(self, question, tools, user_id, session_id):
+        self.calls.append((user_id, session_id))
         search_knowledge_base, list_documents = tools
         await search_knowledge_base("first try")
         await search_knowledge_base(question)
@@ -51,8 +57,8 @@ def search_docs_over(passages):
     return SearchDocs(FakeEmbedder(), InMemorySearch(passages), top_k=4, min_score=0.4)
 
 
-def signed_in():
-    return TestClient(app, cookies={COOKIE_NAME: google_token()})
+def signed_in(email=OWNER):
+    return TestClient(app, cookies={COOKIE_NAME: google_token(email=email)})
 
 
 def ask(passages, question, path="/ask"):
@@ -86,6 +92,34 @@ def test_agent_lists_each_found_passage_once():
 
     assert body["answer"] == "Found in Kubernetes"
     assert [source["title"] for source in body["sources"]] == ["PostgreSQL"]
+
+
+def test_agent_continues_the_chat_it_is_given():
+    agent = FakeAgent()
+    app.state.ask_agent = AskAgent(agent, search_docs_over([POSTGRES]), InMemorySearch([POSTGRES]))
+    client = signed_in()
+
+    first = client.post("/agent/ask", json={"question": "What is PostgreSQL?"}).json()
+    second = client.post(
+        "/agent/ask", json={"question": "Tell me more", "session_id": first["session_id"]}
+    ).json()
+
+    assert first["session_id"]
+    assert second["session_id"] == first["session_id"]
+    assert agent.calls == [(OWNER, first["session_id"]), (OWNER, first["session_id"])]
+
+
+def test_each_user_has_their_own_chats():
+    agent = FakeAgent()
+    app.state.users = FakeUserDirectory({OWNER: "user", FRIEND: "user"})
+    app.state.ask_agent = AskAgent(agent, search_docs_over([POSTGRES]), InMemorySearch([POSTGRES]))
+
+    first = signed_in(OWNER).post("/agent/ask", json={"question": "What is PostgreSQL?"}).json()
+    signed_in(FRIEND).post(
+        "/agent/ask", json={"question": "Tell me more", "session_id": first["session_id"]}
+    )
+
+    assert agent.calls == [(OWNER, first["session_id"]), (FRIEND, first["session_id"])]
 
 
 def test_agent_needs_an_llm_key():

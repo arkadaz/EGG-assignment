@@ -4,9 +4,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from tests.fake_google import CLIENT_ID, OTHER_PRIVATE_KEY, FakeGoogleKeys, google_token
+from tests.fake_google import (
+    CLIENT_ID,
+    FRIEND,
+    OTHER_PRIVATE_KEY,
+    OWNER,
+    FakeGoogleKeys,
+    google_token,
+)
+from tests.fake_users import FakeUserDirectory
 
 app.state.google_login.keys = FakeGoogleKeys()
+app.state.users = FakeUserDirectory({OWNER: "user"})
 
 
 def browser():
@@ -20,7 +29,7 @@ def test_api_call_without_login_gets_401():
 
 
 def test_page_without_login_goes_to_the_login_page():
-    response = browser().get("/dev-ui/", headers={"Accept": "text/html"})
+    response = browser().get("/docs", headers={"Accept": "text/html"})
 
     assert response.status_code == 307
     assert response.headers["location"] == "/login"
@@ -40,6 +49,28 @@ def test_owner_signs_in_and_out():
     assert client.get("/docs").status_code == 200
 
     client.get("/logout")
+    assert client.get("/docs").status_code == 401
+
+
+def test_a_user_added_to_the_table_can_sign_in_at_once():
+    app.state.users = FakeUserDirectory({OWNER: "user"})
+    client = browser()
+    friend_token = google_token(email=FRIEND)
+
+    assert client.post("/auth/google", json={"credential": friend_token}).status_code == 403
+
+    app.state.users.roles[FRIEND] = "user"
+    assert client.post("/auth/google", json={"credential": friend_token}).status_code == 200
+    assert client.get("/docs").status_code == 200
+
+
+def test_a_user_removed_from_the_table_is_locked_out_at_once():
+    app.state.users = FakeUserDirectory({OWNER: "user", FRIEND: "user"})
+    client = browser()
+    client.post("/auth/google", json={"credential": google_token(email=FRIEND)})
+
+    del app.state.users.roles[FRIEND]
+
     assert client.get("/docs").status_code == 401
 
 

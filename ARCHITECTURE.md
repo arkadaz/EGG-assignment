@@ -15,7 +15,7 @@ flowchart LR
 
 Three programs that share only the database:
 
-- **migrate** owns the schema. It applies new migration files, then exits.
+- **migrate** owns the schema. It applies new migration files, adds the first user, then exits.
 - **ingest** writes. It turns the articles into embedded chunks, then exits.
 - **search** reads. It answers questions from those chunks.
 
@@ -28,6 +28,9 @@ this locally, and the Deploy workflow does it on GCP.
 each run it applies the files in `migrations/` that are not in that table yet, in name order
 (`001_...`, `002_...`), and adds each name to the table.
 
+After the files, it adds `ALLOWED_EMAIL` to the `users` table (`002_create_users.sql`) with the
+role `user`, unless the email is already there. That is how the first user can sign in.
+
 All of this happens in one transaction: if one file fails, none of them are applied. To change
 the schema, add a new numbered file. Never edit one that has already run.
 
@@ -35,8 +38,8 @@ the schema, add a new numbered file. Never edit one that has already run.
 
 `POST /ask`:
 
-1. The login middleware checks the Google JWT in the cookie (see Security). Then FastAPI checks
-   the body: a question of 1 to 1000 characters.
+1. The login middleware checks the Google JWT in the cookie and looks the email up in the `users`
+   table (see Security). Then FastAPI checks the body: a question of 1 to 1000 characters.
 2. `FastEmbedEmbedder` turns `task: search result | query: <question>` into 768 numbers with
    EmbeddingGemma. It runs in a worker thread, so the server keeps handling other requests.
 3. `PgVectorSearch` runs one SQL query with three parts:
@@ -65,8 +68,39 @@ Why the search has two parts:
 
 ADK reads each tool's name and docstring as its description. The agent can rewrite the query and
 search again, up to `AGENT_MAX_LLM_CALLS` (6) LLM calls. The sources it returns are every passage
-the tools found, each listed once. Each request gets a new in-memory session, and nothing is kept
-between requests.
+the tools found, each listed once.
+
+The agent keeps each chat in Postgres, so a user can continue it:
+
+- **How to continue:** the answer has a `session_id`. Send it back with the next question and the
+  agent sees the earlier questions and answers. Without one, a new chat starts.
+- **Whose chat it is:** each chat is stored under the signed-in email. ADK finds a chat by app,
+  user and id together, so another user who sends the same `session_id` gets a new, empty chat of
+  their own.
+- **Where it is stored:** ADK's `DatabaseSessionService`, in the same database as the documents. It
+  gets the same `DATABASE_URL`, with `postgresql://` turned into `postgresql+psycopg://`, because
+  ADK uses SQLAlchemy, which needs the driver named in the URL. psycopg is the driver search
+  already uses.
+- **Who owns the tables:** ADK creates its own tables (`sessions`, `events`, `app_states`,
+  `user_states`, `adk_internal_metadata`) the first time a chat is used, and upgrades them itself.
+  They are ADK's, not part of `migrate/migrations/`.
+- **Connections:** ADK opens its own pool of `SESSION_POOL_SIZE` (2) connections with no overflow.
+- **What survives:** a chat survives a restart, a deploy and scale to zero, and any instance can
+  continue it.
+
+The service is only this API and the agent. It is a plain FastAPI app; ADK's web UI and its own
+endpoints are not served.
+
+## Request logs
+
+A middleware outside the login check writes one JSON line per request to stdout: `request_id`,
+method, path, status, `duration_ms` and `user` (the signed-in email). A request that fails is
+logged as `ERROR`, with the error and its traceback. On Cloud Run, Cloud Logging turns each line
+into a structured entry, so you can filter by user, path or status.
+
+The `request_id` comes from the caller's `X-Request-ID` header if it sends one, otherwise it is a
+new UUID, and it is sent back in `X-Request-ID`. Uvicorn's access log is off, so each request
+appears once.
 
 ## How data is loaded
 
@@ -111,10 +145,10 @@ flowchart LR
 | Service | Role |
 |---|---|
 | Cloud Run service `egg-rag-search` | Runs the stateless API over HTTPS. It scales from 0 to 3 instances, with 1 vCPU and 4 GiB each. The model takes 1.4 GiB in the process, and Cloud Run also counts the model file it reads, so 2 GiB is not enough. |
-| Cloud Run job `egg-rag-migrate` | Applies new migration files, then exits. |
+| Cloud Run job `egg-rag-migrate` | Applies new migration files, adds `ALLOWED_EMAIL` as the first user, then exits. |
 | Cloud Run job `egg-rag-ingest` | Loads the data apart from user traffic, then exits. It is safe to run again at any time, because the hashes skip what is stored. It gets 2 vCPU and 4 GiB. At 2 GiB it ran out of memory on Cloud Run, although it fits in 2 GiB under Docker. |
 | Cloud Storage bucket `egg-interview-models` | Holds the embedding model (1.2 GB), uploaded once. Cloud Run mounts it read-only at `/models` in the ingest job and the search service, so the model is not in any image and nothing downloads it. It is part of the one-time setup, so Destroy keeps it. |
-| Cloud SQL for PostgreSQL 16 | Stores the documents and chunks, with the pgvector HNSW index and the full-text GIN index. Smallest tier (`db-f1-micro`), with daily backups. |
+| Cloud SQL for PostgreSQL 16 | Stores the documents and chunks, with the pgvector HNSW index and the full-text GIN index, the `users` table, and the agent's chats. Smallest tier (`db-f1-micro`), with daily backups. |
 | Cloud SQL connector | Cloud Run's built-in connection to Cloud SQL. It is encrypted and checks the caller's IAM role (`cloudsql.client`). The database has a public IP but allows no networks, so this connector is the only way in. |
 | Secret Manager | `database-url` is created by Terraform with a random password. `llm-api` is created once by hand. Both are passed to the containers as environment variables. |
 | Artifact Registry | Stores the three images, each tagged with the Git commit it was built from. Without the model they are small: search 1 GB, ingest 0.5 GB, migrate 0.3 GB. Deploy pushes the images before Terraform runs, so the registry is one-time setup and Destroy keeps it. |
@@ -154,9 +188,9 @@ that are already in place.
 
 - The API is stateless. Each instance only holds the pool and the model in memory; the data lives
   in Postgres. Any instance can serve any request, so Cloud Run can add instances freely.
-- Each instance has its own pool of `DB_POOL_SIZE` (5) connections. `db-f1-micro` allows 25
-  connections, so `max_instance_count` is 3: 3 × 5 = 15, plus 1 for a running job, stays below
-  25. A bigger tier allows more instances.
+- Each instance has two pools: `DB_POOL_SIZE` (5) connections for search and
+  `SESSION_POOL_SIZE` (2) for the agent's chats. `db-f1-micro` allows 25 connections, so `max_instance_count` is 3: 3 × (5 + 2) = 21,
+  plus 1 for a running job, stays below 25. A bigger tier allows more instances.
 - Embedding the question is the CPU-heavy part of a request. It runs on the instance's own CPU, so
   more traffic means more instances, not a bigger database.
 - The HNSW index keeps vector search fast as the number of chunks grows. Ingest only embeds new or
@@ -197,19 +231,24 @@ that are already in place.
   - GitHub can only sign in as the deployer from this repository's `main` branch.
 - **Containers:** all three run as a non-root user (`app`). The search image is built in two
   stages, so uv and the lock files stay out of the image that runs.
-- **Login:** a middleware guards every route except the login page, including the ADK web UI and
-  `/docs`. A request needs a JWT from Sign in with Google, in an `HttpOnly`, `Secure`,
-  `SameSite=Lax` cookie. On every request the service checks four things:
+- **Login:** a middleware guards every route except the login page, including `/docs`. A request
+  needs a JWT from Sign in with Google, in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie. On every
+  request the service checks four things:
   - **Signature:** made by Google, checked against Google's public keys, which are cached for
     5 minutes
   - **Audience:** our client ID
   - **Issuer:** Google
-  - **Account:** the email is `ALLOWED_EMAIL` and verified
+  - **Account:** the email is verified and is in the `users` table
 
-  The JWT expires after one hour. There is no server-side session to steal or keep in sync. The
-  app refuses to start without `ALLOWED_EMAIL` and `GOOGLE_CLIENT_ID`, so login cannot be
-  switched off by a missing value. The Google sign-in app stays in Testing mode with one test
-  user, a second lock on top of `ALLOWED_EMAIL`.
+  The JWT expires after one hour. There is no server-side session to steal or keep in sync. Adding
+  or removing a row in `users` takes effect on the next request, with no restart. An empty table
+  lets nobody in, and the app refuses to start without `GOOGLE_CLIENT_ID`. The Google sign-in app
+  stays in Testing mode, so each user must also be a test user: a second lock on top of the
+  `users` table.
+- **Chats:** each agent chat is stored under the signed-in email, so one user cannot continue
+  another user's chat.
 - **Input:** questions are limited to 1000 characters. The LLM is told to answer only from the
   passages it is given.
+- **Logs:** each request line holds the signed-in email, so the logs show who did what. They never
+  hold the cookie or the JWT.
 - **Before more users:** add rate limits in front of the service.

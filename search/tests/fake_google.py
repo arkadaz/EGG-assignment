@@ -5,6 +5,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 OWNER = "owner@example.com"
+FRIEND = "friend@example.com"
 CLIENT_ID = "test-client-id"
 GOOGLE_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 OTHER_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)

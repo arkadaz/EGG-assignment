@@ -195,14 +195,15 @@ not store a placeholder.
 
 ### 7. Create the Google sign-in client
 
-Every page and API call needs a Google login, and only `allowed_email` can sign in. The login
-works in four steps:
+Every page and API call needs a Google login, and only emails in the `users` table can sign in.
+The migrate job adds `allowed_email` (from `infrastructure/variables.tf`) to that table as the
+first user. The login works in four steps:
 
 1. The **Sign in with Google** button on `/login` gives the page a JWT, signed by Google, that
    says which account signed in.
 2. The page sends that JWT to `/auth/google`.
 3. The service checks Google's signature, that the JWT is for your client ID, that it has not
-   expired, and that the email is `allowed_email` and verified.
+   expired, that the email is verified, and that the email is in the `users` table.
 4. If all of that passes, the JWT becomes a cookie that every later request is checked against.
 
 The button needs a client ID from your project. Google has no API or Terraform for this, so you
@@ -216,9 +217,9 @@ make it in the Console:
    - **Audience:** **External**
    - **Contact information:** your email
 3. Accept the policy and click **Create**.
-4. Go to **Audience** → **Test users** → **Add users**, add the email that will sign in, and save.
-   While the app is in Testing mode, only test users can sign in at all. That is a second lock on
-   top of `allowed_email`.
+4. Go to **Audience** → **Test users** → **Add users**, add every email that will sign in, and
+   save. While the app is in Testing mode, only test users can sign in at all. That is a second
+   lock on top of the `users` table.
 5. Go to **Clients** → **Create client**:
    - **Application type:** Web application
    - **Name:** `egg-rag-search`
@@ -276,11 +277,25 @@ branch `main` → **Run workflow**. Two jobs run, one after the other:
 
 Terraform runs each job once per commit. Running Deploy again on the same commit changes nothing.
 
-Then open `https://egg-rag-search-<project number>.<region>.run.app/`:
+Then open `https://egg-rag-search-<project number>.<region>.run.app/docs`:
 
 1. It sends you to the login page. Sign in with Google.
-2. You land in the ADK web UI. `/docs` is the API.
+2. You land back on `/docs`, the API. Use "Try it out" there.
 3. The first request after an idle period takes a few extra seconds while an instance starts.
+
+To let someone else sign in, add their email to the `users` table and add them as a test user
+(step 7). On GCP, open **Cloud SQL** → the `egg-rag-…` instance → **Cloud SQL Studio**, sign in
+to the `rag` database as `rag` (the password is in the `database-url` secret), and run:
+
+```sql
+INSERT INTO users (email) VALUES ('friend@example.com');
+```
+
+It works on their next request, with no restart. `DELETE FROM users WHERE email = '...'` locks
+them out the same way.
+
+Every request is logged as one JSON line. Find them in **Cloud Run** → `egg-rag-search` →
+**Logs**, and filter by `jsonPayload.user`, `jsonPayload.path` or `jsonPayload.status`.
 
 Cloud Run also gives the service an older, random-looking address. Google sign-in refuses it,
 because it is not in the client's JavaScript origins, so always use the one with the project
